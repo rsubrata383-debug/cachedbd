@@ -4,6 +4,8 @@
 //! the Rust standard library (`std::net`). It demonstrates how sockets behave in
 //! synchronous, blocking mode before moving to non-blocking I/O and `epoll`.
 
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 
@@ -63,7 +65,7 @@ pub fn handle_client(mut stream: TcpStream) -> io::Result<()> {
 /// # Errors
 ///
 /// Returns an [`io::Error`] if accepting a connection fails.
-pub fn run_server(listener: TcpListener) -> io::Result<()> {
+pub fn run_server(listener: &TcpListener) -> io::Result<()> {
     for stream_result in listener.incoming() {
         let stream = stream_result?;
         if let Err(err) = handle_client(stream) {
@@ -81,5 +83,5 @@ fn main() -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:7380")?;
     println!("Blocking TCP echo server listening on 127.0.0.1:7380");
 
-    run_server(listener)
+    run_server(&listener)
 }

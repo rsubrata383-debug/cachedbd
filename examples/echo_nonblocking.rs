@@ -4,75 +4,162 @@
 //! It shows how a single thread can concurrently handle multiple connected clients without
 //! blocking, managing partial reads, partial writes, and `WouldBlock` (`EAGAIN`) conditions.
 
-use cachedb::net::event_loop::{EventLoop, Handler, Token};
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
+use cachedb::net::connection::{ConnectionTable, DEFAULT_MAX_CONNECTIONS, ReadStatus, WriteStatus};
+use cachedb::net::event_loop::{EventLoop, Handler, TimerId, Token};
 use cachedb::net::sys::{EpollFlags, as_raw_fd};
-use std::collections::{HashMap, VecDeque};
-use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io;
+use std::net::TcpListener;
 use std::time::Duration;
 
 /// Reserved token identifying readiness events on the listening server socket.
 const LISTENER_TOKEN: Token = 0;
 
-/// Base token assigned to accepted remote client connections.
-const FIRST_CLIENT_TOKEN: Token = 1;
-
-/// Represents an active, non-blocking client connection and its pending outgoing buffer.
-#[derive(Debug)]
-pub struct ClientConnection {
-    /// Non-blocking TCP socket stream.
-    pub stream: TcpStream,
-    /// Outgoing byte queue holding echoed data waiting to be transmitted.
-    pub send_queue: VecDeque<u8>,
-}
+/// Reserved timer identifier for periodic idle connection sweeps.
+const IDLE_SWEEP_TIMER_ID: TimerId = 1;
 
 /// An event-driven, non-blocking TCP echo server.
 ///
 /// # Core Concepts Explained
 ///
 /// - **`set_nonblocking(true)`**: In non-blocking mode, operations that would otherwise
-///   sleep the calling thread return immediately with an error of kind [`io::ErrorKind::WouldBlock`]
-///   (`EAGAIN` in POSIX).
+///   sleep the calling thread return immediately with an error of kind [`io::ErrorKind::WouldBlock`].
 /// - **Accept Loop**: When the listener is marked `READABLE`, multiple incoming connections
-///   might be queued in the kernel backlog. We must accept in a loop until `WouldBlock`.
-/// - **Partial Writes**: Sockets have bounded kernel transmit buffers. If an application writes
-///   more data than the kernel buffer can fit, `write` writes as many bytes as possible and
-///   returns the count, or returns `WouldBlock`. The remaining bytes must be queued in user space
-///   (`send_queue`) until the socket becomes `WRITABLE`.
-/// - **Dynamic Interest Registration**: Level-triggered `epoll` reports `WRITABLE` continuously
-///   as long as the socket send buffer has free space. If an idle client with an empty send queue
-///   listens for `WRITABLE`, `epoll_wait` returns immediately with 0 delay, resulting in 100% CPU
-///   busy-polling. Therefore, we monitor `WRITABLE` *only* when `send_queue` is non-empty!
+///   might be queued in the kernel backlog. We accept in a loop until `WouldBlock`.
+/// - **Connection Table**: Centralized table managing active client sessions, unique token IDs,
+///   and capacity limit enforcement.
+/// - **Streaming Buffers & Write Queues**: Each connection maintains an inbound [`cachedb::net::buffer::ReadBuffer`]
+///   and outbound [`cachedb::net::buffer::WriteQueue`].
+/// - **Dynamic Backpressure**: When a connection's write queue exceeds high watermark limits,
+///   `desired_flags()` drops `READABLE`, preventing slow clients from overwhelming server memory.
+/// - **Connection Limits & Idle Timeouts**: Rejects new clients when capacity is reached and sweeps
+///   idle connections periodically.
+/// - **Graceful Shutdown**: Drains pending writes upon shutdown signal within a configurable timeout.
 #[derive(Debug)]
 pub struct NonBlockingEchoServer {
     listener: TcpListener,
-    clients: HashMap<Token, ClientConnection>,
-    next_token: Token,
+    connections: ConnectionTable,
     event_loop: EventLoop,
+    idle_timeout: Option<Duration>,
+    sweep_interval: Duration,
+    shutdown_timeout: Duration,
+    is_shutting_down: bool,
+    rejected_connections: usize,
 }
 
 impl NonBlockingEchoServer {
-    /// Creates a new non-blocking echo server instance and registers the listener.
+    /// Creates a new non-blocking echo server instance with default configuration.
     ///
     /// # Errors
     ///
     /// Returns an [`io::Error`] if setting the listener to non-blocking mode or registering
     /// with the event loop fails.
     pub fn new(listener: TcpListener) -> io::Result<Self> {
+        Self::with_config(
+            listener,
+            DEFAULT_MAX_CONNECTIONS,
+            Some(Duration::from_secs(60)),
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+        )
+    }
+
+    /// Creates a non-blocking echo server instance with explicit limits and timeouts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`io::Error`] if setting the listener to non-blocking mode or registering
+    /// with the event loop fails.
+    pub fn with_config(
+        listener: TcpListener,
+        max_connections: usize,
+        idle_timeout: Option<Duration>,
+        sweep_interval: Duration,
+        shutdown_timeout: Duration,
+    ) -> io::Result<Self> {
         listener.set_nonblocking(true)?;
 
-        let event_loop = EventLoop::new()?;
+        let mut event_loop = EventLoop::new()?;
         event_loop.register(as_raw_fd(&listener), LISTENER_TOKEN, EpollFlags::READABLE)?;
+
+        if idle_timeout.is_some() {
+            event_loop.schedule_timer(sweep_interval, IDLE_SWEEP_TIMER_ID);
+        }
 
         Ok(Self {
             listener,
-            clients: HashMap::new(),
-            next_token: FIRST_CLIENT_TOKEN,
+            connections: ConnectionTable::with_max_connections(max_connections),
             event_loop,
+            idle_timeout,
+            sweep_interval,
+            shutdown_timeout,
+            is_shutting_down: false,
+            rejected_connections: 0,
         })
     }
 
-    /// Runs the server event loop continuously until stopped.
+    /// Returns the number of connections that were rejected due to capacity limits.
+    #[must_use]
+    pub fn rejected_connections(&self) -> usize {
+        self.rejected_connections
+    }
+
+    /// Returns `true` if the server is in the process of shutting down.
+    #[must_use]
+    pub fn is_shutting_down(&self) -> bool {
+        self.is_shutting_down
+    }
+
+    /// Initiates a graceful shutdown sequence.
+    ///
+    /// 1. Deregisters the listener socket so no further connections are accepted.
+    /// 2. Marks active connections for closing and pauses reading.
+    /// 3. Drains in-flight write queues until complete or `shutdown_timeout` expires.
+    /// 4. Force-closes any lingering connections that exceeded the deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`io::Error`] if polling during the drain phase fails.
+    pub fn initiate_graceful_shutdown(&mut self) -> io::Result<()> {
+        if self.is_shutting_down {
+            return Ok(());
+        }
+        self.is_shutting_down = true;
+
+        // 1. Deregister the listener so no further connections are accepted.
+        let _ = self.event_loop.deregister(as_raw_fd(&self.listener));
+
+        // 2. Initiate shutdown on active connections (closes idle ones, keeps WRITABLE for pending data).
+        self.connections.initiate_shutdown(&mut self.event_loop);
+
+        // 3. Drain loop: flush pending write queues.
+        let drain_deadline = std::time::Instant::now() + self.shutdown_timeout;
+        let mut loop_ref = std::mem::replace(&mut self.event_loop, EventLoop::new()?);
+
+        while !self.connections.is_empty() && std::time::Instant::now() < drain_deadline {
+            let remaining = drain_deadline.saturating_duration_since(std::time::Instant::now());
+            let poll_timeout = remaining.min(Duration::from_millis(50));
+            let _ = loop_ref.drain_once(self, Some(poll_timeout))?;
+        }
+
+        self.event_loop = loop_ref;
+
+        // 4. Force-close any lingering connections that exceeded the shutdown deadline.
+        if !self.connections.is_empty() {
+            let forced = self.connections.force_close_all(&mut self.event_loop);
+            if forced > 0 {
+                eprintln!(
+                    "Force-closed {forced} lingering client connections on shutdown deadline."
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Runs the server event loop continuously until shutdown is requested,
+    /// then conducts a graceful shutdown draining in-flight writes.
     ///
     /// # Errors
     ///
@@ -81,7 +168,9 @@ impl NonBlockingEchoServer {
         let mut loop_ref = std::mem::replace(&mut self.event_loop, EventLoop::new()?);
         let res = loop_ref.run(self);
         self.event_loop = loop_ref;
-        res
+        res?;
+
+        self.initiate_graceful_shutdown()
     }
 
     /// Runs the server for a limited number of ticks (useful for tests).
@@ -100,41 +189,47 @@ impl NonBlockingEchoServer {
 
     /// Accepts all pending incoming connections from the kernel connection backlog.
     fn handle_accept(&mut self) -> io::Result<()> {
+        if self.is_shutting_down {
+            return Ok(());
+        }
+
         loop {
             match self.listener.accept() {
-                Ok((stream, _peer_addr)) => {
+                Ok((stream, peer_addr)) => {
                     stream.set_nonblocking(true)?;
 
-                    let token = self.next_token;
-                    self.next_token += 1;
-
-                    // Register interest in readable events for this new client.
-                    let fd = as_raw_fd(&stream);
-                    if let Err(err) = self.event_loop.register(
-                        fd,
-                        token,
-                        EpollFlags::READABLE | EpollFlags::HANGUP,
-                    ) {
-                        eprintln!("Failed to register client {token}: {err}");
+                    if self.connections.is_at_capacity() {
+                        eprintln!(
+                            "Rejecting connection from {peer_addr}: table reached max capacity ({})",
+                            self.connections.max_connections()
+                        );
+                        self.rejected_connections += 1;
+                        drop(stream);
                         continue;
                     }
 
-                    self.clients.insert(
-                        token,
-                        ClientConnection {
-                            stream,
-                            send_queue: VecDeque::new(),
-                        },
-                    );
+                    let token = match self.connections.insert(stream, peer_addr) {
+                        Ok(t) => t,
+                        Err(err) => {
+                            eprintln!("Rejected connection from {peer_addr}: {err}");
+                            self.rejected_connections += 1;
+                            continue;
+                        }
+                    };
+
+                    if let Err(err) = self
+                        .connections
+                        .register_with_loop(token, &mut self.event_loop)
+                    {
+                        eprintln!("Failed to register client {token}: {err}");
+                        self.connections.remove(token);
+                    }
                 }
                 Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
                     // No more pending connections in the backlog queue.
                     break;
                 }
-                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => {
-                    // Interrupted by signal; retry accept.
-                    continue;
-                }
+                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => {}
                 Err(err) => return Err(err),
             }
         }
@@ -143,115 +238,71 @@ impl NonBlockingEchoServer {
 
     /// Reads incoming bytes from a client socket until `WouldBlock` or EOF (`Ok(0)`).
     fn handle_client_read(&mut self, token: Token) -> io::Result<bool> {
-        let Some(client) = self.clients.get_mut(&token) else {
+        let Some(conn) = self.connections.get_mut(token) else {
             return Ok(false);
         };
 
-        let mut buf = [0u8; 1024];
-        let mut client_closed = false;
-
-        loop {
-            match client.stream.read(&mut buf) {
-                Ok(0) => {
-                    // Peer performed an orderly shutdown (EOF).
-                    client_closed = true;
-                    break;
-                }
-                Ok(n) => {
-                    // Append incoming chunk into the echo queue.
-                    client.send_queue.extend(&buf[..n]);
-                }
-                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
-                    // Drained available receive buffer bytes for now.
-                    break;
-                }
-                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => {
-                    continue;
-                }
-                Err(_) => {
-                    // Connection reset or unrecoverable read failure.
-                    client_closed = true;
-                    break;
-                }
+        match conn.read_incoming()? {
+            ReadStatus::Eof => {
+                self.connections
+                    .remove_and_deregister(token, &mut self.event_loop);
+                return Ok(false);
             }
-        }
-
-        if client_closed {
-            self.remove_client(token);
-            return Ok(false);
+            ReadStatus::WouldBlock => {}
+            ReadStatus::Ok(n) => {
+                // Echo received bytes back to client.
+                let data = conn.read_buffer().data().to_vec();
+                if let Err(err) = conn.send_chunk(data) {
+                    eprintln!("Failed to enqueue echo payload for client {token}: {err}");
+                    self.connections
+                        .remove_and_deregister(token, &mut self.event_loop);
+                    return Ok(false);
+                }
+                conn.read_buffer_mut().consume(n);
+            }
         }
 
         // Try an immediate write flush of newly queued bytes.
-        self.handle_client_write(token)
+        Ok(self.handle_client_write(token))
     }
 
     /// Flushes queued outgoing bytes into the client socket transmit buffer.
-    fn handle_client_write(&mut self, token: Token) -> io::Result<bool> {
-        let Some(client) = self.clients.get_mut(&token) else {
-            return Ok(false);
+    fn handle_client_write(&mut self, token: Token) -> bool {
+        let Some(conn) = self.connections.get_mut(token) else {
+            return false;
         };
 
-        let mut write_failed = false;
-
-        while !client.send_queue.is_empty() {
-            let (first_slice, _) = client.send_queue.as_slices();
-            match client.stream.write(first_slice) {
-                Ok(0) => {
-                    // Unable to make progress; buffer full.
-                    break;
+        match conn.flush_outgoing() {
+            Ok(WriteStatus::Complete) => {
+                if conn.is_closed() {
+                    self.connections
+                        .remove_and_deregister(token, &mut self.event_loop);
+                    return false;
                 }
-                Ok(n) => {
-                    client.send_queue.drain(..n);
-                }
-                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
-                    // Kernel socket transmit buffer is full for now.
-                    break;
-                }
-                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => {
-                    continue;
-                }
-                Err(_) => {
-                    // Write error (broken pipe, connection reset).
-                    write_failed = true;
-                    break;
-                }
+            }
+            Ok(WriteStatus::Pending(_)) => {}
+            Err(_) => {
+                self.connections
+                    .remove_and_deregister(token, &mut self.event_loop);
+                return false;
             }
         }
 
-        if write_failed {
-            self.remove_client(token);
-            return Ok(false);
-        }
-
-        // Dynamically adjust epoll interest flags:
-        // - If send_queue has remaining bytes, we MUST monitor WRITABLE to finish flushing.
-        // - If send_queue is empty, we MUST NOT monitor WRITABLE (prevents busy loops).
-        if let Some(client) = self.clients.get(&token) {
-            let fd = as_raw_fd(&client.stream);
-            let flags = if client.send_queue.is_empty() {
-                EpollFlags::READABLE | EpollFlags::HANGUP
-            } else {
-                EpollFlags::READABLE | EpollFlags::WRITABLE | EpollFlags::HANGUP
-            };
-
-            let _ = self.event_loop.reregister(fd, token, flags);
-        }
-
-        Ok(true)
+        // Synchronize epoll interest flags: automatically toggles WRITABLE and applies backpressure!
+        let _ = self.connections.sync_interest(token, &mut self.event_loop);
+        true
     }
 
     /// Removes a client connection and deregisters its descriptor from the event loop.
     pub fn remove_client(&mut self, token: Token) {
-        if let Some(client) = self.clients.remove(&token) {
-            let fd = as_raw_fd(&client.stream);
-            let _ = self.event_loop.deregister(fd);
-        }
+        self.connections
+            .remove_and_deregister(token, &mut self.event_loop);
     }
 
     /// Returns the number of currently connected active clients.
     #[must_use]
     pub fn client_count(&self) -> usize {
-        self.clients.len()
+        self.connections.len()
     }
 }
 
@@ -271,8 +322,20 @@ impl Handler for NonBlockingEchoServer {
             }
 
             if flags.contains(EpollFlags::WRITABLE) {
-                let _ = self.handle_client_write(token)?;
+                let _ = self.handle_client_write(token);
             }
+        }
+        Ok(())
+    }
+
+    fn on_timeout(&mut self, timer_id: TimerId) -> io::Result<()> {
+        if timer_id == IDLE_SWEEP_TIMER_ID && !self.is_shutting_down {
+            if let Some(idle_timeout) = self.idle_timeout {
+                self.connections
+                    .sweep_idle(idle_timeout, &mut self.event_loop);
+            }
+            self.event_loop
+                .schedule_timer(self.sweep_interval, IDLE_SWEEP_TIMER_ID);
         }
         Ok(())
     }

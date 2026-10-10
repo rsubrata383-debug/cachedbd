@@ -477,6 +477,56 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - **Cross-Platform Compatibility**: On Linux targets, native `sigaction` traps `SIGINT` and `SIGTERM`. On non-Linux targets (such as Windows development hosts), safe stub implementations allow tests, examples, and tooling to compile and execute predictably.
   - **Completion of Week 3**: Week 3 networking basics are now complete (blocking TCP echo exploration, scoped unsafe `epoll` wrapper, single-threaded zero-cost `EventLoop`, non-blocking echo server with dynamic interest registration, and signal-driven graceful shutdown).
 
+---
+
+## 2026-10-10: Phase 1 Week 4 Step 1 — Connection Object, Read Buffer, & Write Queue
+
+- **Date**: 2026-10-10
+- **Summary**: Implemented the core networking data structures in `src/net/buffer.rs` (`ReadBuffer`, `WriteQueue`) and `src/net/connection.rs` (`Connection`, `ReadStatus`, `WriteStatus`), providing production-grade buffer management, partial I/O handling, and backpressure enforcement.
+- **Architectural Details**:
+  - **Contiguous Read Buffer (`ReadBuffer`)**: Stores streaming socket bytes in a contiguous buffer with internal `read_pos` and `write_pos` tracking. Protocol decoders inspect frames as contiguous slices (`&[u8]`) with zero allocations. Includes automatic compacting and cursor reset when drained, with an enforced maximum capacity ceiling (`max_capacity`, default 64 MB) to prevent unbounded memory growth from abusive clients.
+  - **FIFO Write Queue (`WriteQueue`)**: Manages outgoing byte chunks for non-blocking socket transmission. Supports zero-copy appending of serialized frames (`enqueue_chunk(Vec<u8>)`), handles partial socket writes across chunks, and tracks total queued bytes against a high-watermark threshold (default 10 MB).
+  - **Connection Lifecycle (`Connection`)**: Represents an active client session with an assigned `Token`, peer `SocketAddr`, stream, read buffer, and write queue. Tracks activity timestamps (`last_active`) for idle timeouts and supports graceful closing (draining pending writes before final socket termination).
+  - **Dynamic Backpressure**: `Connection::desired_flags()` inspects `write_queue.is_backpressured()`. When outgoing buffers exceed the watermark, `READABLE` is automatically excluded from the epoll interest set, pausing client reads until outgoing buffers drain.
+
+---
+
+## 2026-10-10: Phase 1 Week 4 Step 2 — Growable Ring Buffer & ConnectionTable Backpressure Integration
+
+- **Date**: 2026-10-10
+- **Summary**: Implemented the circular `RingBuffer` optimization in `src/net/buffer.rs`, added the centralized `ConnectionTable` in `src/net/connection.rs`, and integrated both into `examples/echo_nonblocking.rs` with active backpressure interest toggling.
+- **Architectural Details**:
+  - **Growable Circular Buffer (`RingBuffer`)**: Eliminates the $O(N)$ data shifting of linear buffers by maintaining independent `head` (write) and `tail` (read) indices that wrap around modulo capacity. Supports two-slice zero-copy inspection (`as_slices() -> (&[u8], &[u8])`), on-demand linearization (`make_contiguous()`), and automated geometric growth with unrolled linear reassembly.
+  - **Connection Table (`ConnectionTable`)**: Replaces ad-hoc `HashMap<Token, ClientConnection>` with a centralized connection registry supporting connection limits (`max_connections`, default 10,000), atomic token allocation, and clean lookup.
+  - **Dynamic Backpressure Toggling**: Integrated with the event loop via `ConnectionTable::sync_interest()`. When a client's write queue exceeds the high watermark (10 MB), `desired_flags()` drops `READABLE`, instructing epoll to stop monitoring socket read events. Once outgoing chunks are flushed below the threshold, read interest is automatically restored.
+  - **Server Refactor**: Refactored `NonBlockingEchoServer` in `examples/echo_nonblocking.rs` to run cleanly over `ConnectionTable`, unifying buffer handling, error recovery, and backpressure without manual raw socket bookkeeping.
+
+---
+
+## 2026-10-10: Phase 1 Week 4 Step 3 — Backpressure Hysteresis & Flow Control
+
+- **Date**: 2026-10-10
+- **Summary**: Implemented dual-watermark hysteresis backpressure ($W_{\text{high}}$ and $W_{\text{low}}$) and hard capacity ceilings in `WriteQueue`, integrated backpressure states into `Connection` and `ConnectionTable`, and validated that epoll stops reading from clients whose output queues grow too large without interest flapping.
+- **Architectural Details**:
+  - **Dual-Watermark Hysteresis**: Addressed interest thrashing (rapid toggle of epoll interest flags across small frame boundaries) by introducing two thresholds. Backpressure engages when pending queued bytes reach $W_{\text{high}}$ (default 10 MB), dropping `READABLE` from epoll. Backpressure disengages only after the queue drains below $W_{\text{low}}$ (default 5 MB, or $W_{\text{high}} / 2$), ensuring stable flow control and amortizing epoll modification syscalls.
+  - **OOM Protection Ceiling**: Added `max_capacity` (default 64 MB) to `WriteQueue`. Enqueue operations exceeding this limit safely return `io::ErrorKind::OutOfMemory` rather than allowing unbounded memory growth from stalled, malicious, or slow-reading clients.
+  - **Dynamic Epoll Synchronization**: `Connection::desired_flags()` inspects `write_queue.is_backpressured()`, automatically filtering out `READABLE` while backpressured. The server event loop calls `ConnectionTable::sync_interest()` to synchronize kernel interest after reading or writing.
+  - **Verification**: Tested unit-level hysteresis mechanics using bounded mock writers (verifying that backpressure remains asserted when drained between $W_{\text{high}}$ and $W_{\text{low}}$ and deasserts below $W_{\text{low}}$) and integration tests confirming event loop interest flag transitions.
+
+---
+
+## 2026-10-10: Phase 1 Week 4 Step 4 — Connection Limits, Idle Timeouts, and Graceful Shutdown
+
+- **Date**: 2026-10-10
+- **Summary**: Implemented connection capacity enforcement, idle connection detection and periodic sweeping, and multi-phase graceful shutdown with drain loops across `ConnectionTable`, `EventLoop`, and `NonBlockingEchoServer`.
+- **Architectural Details**:
+  - **Connection Capacity Ceilings**: Added `is_at_capacity()`, `remaining_capacity()`, and dynamic limit tuning (`set_max_connections()`) to `ConnectionTable`. When the table reaches maximum capacity (default 10,000), incoming connections in the accept loop are rejected immediately, incrementing rejection counters and closing the raw socket without event loop allocation.
+  - **Idle Activity Tracking & Sweeper**: Added monotonic `idle_duration()`, `is_idle()`, and `touch()` to `Connection`. Implemented periodic idle sweeps driven by the `EventLoop` timer wheel (`IDLE_SWEEP_TIMER_ID`). Inactive connections exceeding `idle_timeout` (default 60s) are closed: connections with empty write queues are purged and deregistered immediately, while connections with pending writes are set to closing and kept alive to flush. Lingering closing connections that remain stalled beyond the idle timeout are forcefully purged.
+  - **Graceful Shutdown & Drain Mode**: Implemented `initiate_graceful_shutdown()` on the server, paired with `EventLoop::drain_once()`. When a shutdown signal (`SIGINT`, `SIGTERM`) arrives, the server deregisters the listening socket from epoll, pauses client read interest (`READABLE` dropped), and enters a drain loop flushing pending write queues up to a configurable deadline (`shutdown_timeout`, default 5s). Lingering connections exceeding the deadline are forcefully terminated via `force_close_all()`.
+  - **Verification**: Verified with unit tests covering capacity queries, dynamic limit expansion, idle sweeps, and closing-state purges in `src/net/connection.rs`, as well as integration tests validating connection rejection, shutdown drain behavior, and clean teardown in `tests/integration.rs`.
+
+
+
 
 
 

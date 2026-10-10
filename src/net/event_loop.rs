@@ -141,7 +141,32 @@ impl EventLoop {
         handler: &mut H,
         timeout: Option<Duration>,
     ) -> io::Result<usize> {
-        if is_shutdown_requested() {
+        self.run_once_internal(handler, timeout, false)
+    }
+
+    /// Executes a single polling tick while bypassing the shutdown request check.
+    ///
+    /// This allows servers to drain in-flight output buffers and process close events
+    /// during graceful shutdown even after a termination signal has been flagged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`io::Error`] if OS polling or handler processing fails.
+    pub fn drain_once<H: Handler>(
+        &mut self,
+        handler: &mut H,
+        timeout: Option<Duration>,
+    ) -> io::Result<usize> {
+        self.run_once_internal(handler, timeout, true)
+    }
+
+    fn run_once_internal<H: Handler>(
+        &mut self,
+        handler: &mut H,
+        timeout: Option<Duration>,
+        allow_drain: bool,
+    ) -> io::Result<usize> {
+        if !allow_drain && is_shutdown_requested() {
             self.stop();
             return Ok(0);
         }
@@ -184,7 +209,7 @@ impl EventLoop {
             Err(err) => return Err(err),
         };
 
-        if is_shutdown_requested() {
+        if !allow_drain && is_shutdown_requested() {
             self.stop();
             return Ok(0);
         }
@@ -193,8 +218,9 @@ impl EventLoop {
         let now_after_wait = Instant::now();
         while let Some(earliest) = self.timers.peek() {
             if earliest.deadline <= now_after_wait {
-                let entry = self.timers.pop().expect("peek succeeded");
-                handler.on_timeout(entry.timer_id)?;
+                if let Some(entry) = self.timers.pop() {
+                    handler.on_timeout(entry.timer_id)?;
+                }
             } else {
                 break;
             }
@@ -239,6 +265,12 @@ impl EventLoop {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 mod tests {
     use super::*;
 

@@ -2,6 +2,10 @@
 name = "cachedb"
 version = "0.1.0"
 edition = "2024"
+description = "A lightweight caching database"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/rsubrata383-debug/cachedbd"
 
 [[bin]]
 name = "cachedbd"
@@ -13,6 +17,35 @@ path = "src/main.rs"
 libc = "0.2"
 
 [lints.rust]
+# Fail compilation on any warning
+warnings = "deny"
 unsafe_code = "deny"
 missing_docs = "warn"
+rust_2024_compatibility = { level = "warn", priority = -1 }
+# Flag non-standard or missing attributes
+unused = { level = "warn", priority = -1 }
 
+[lints.clippy]
+# Base groups (low priority so individual overrides win)
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# High-impact restriction lints
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+
+# Overrides for pedantic/nursery lints that produce false positives or fight idiomatic patterns
+missing_const_for_fn = "allow"
+option_if_let_else = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+doc_markdown = "allow"
+module_name_repetitions = "allow"
+cargo_common_metadata = "allow"
+multiple_crate_versions = "allow"
+cast_possible_wrap = "allow"
+borrow_as_ptr = "allow"

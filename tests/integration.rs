@@ -1,5 +1,13 @@
 //! End-to-end integration tests for cachedb.
 
+// AGENTS.md Section 5: unwrap and expect are explicitly allowed in tests.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::thread;
@@ -108,15 +116,15 @@ fn test_event_loop_shutdown_via_signal_flag() -> Result<(), Box<dyn std::error::
     use cachedb::net::event_loop::{EventLoop, Handler, Token};
     use cachedb::net::sys::{EpollFlags, is_shutdown_requested, request_shutdown, reset_shutdown};
 
-    reset_shutdown();
-    assert!(!is_shutdown_requested());
-
     struct NoopHandler;
     impl Handler for NoopHandler {
         fn on_event(&mut self, _token: Token, _flags: EpollFlags) -> std::io::Result<()> {
             Ok(())
         }
     }
+
+    reset_shutdown();
+    assert!(!is_shutdown_requested());
 
     let mut event_loop = EventLoop::new()?;
     let mut handler = NoopHandler;
@@ -131,5 +139,175 @@ fn test_event_loop_shutdown_via_signal_flag() -> Result<(), Box<dyn std::error::
 
     reset_shutdown();
     assert!(!is_shutdown_requested());
+    Ok(())
+}
+
+#[test]
+fn test_connection_table_backpressure_interest_toggling() -> Result<(), Box<dyn std::error::Error>>
+{
+    use cachedb::net::connection::ConnectionTable;
+    use cachedb::net::event_loop::EventLoop;
+    use cachedb::net::sys::EpollFlags;
+
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?;
+
+    let mut event_loop = EventLoop::new()?;
+    let mut table = ConnectionTable::with_max_connections(10);
+
+    // Create client connection.
+    let client_stream = TcpStream::connect(addr)?;
+    let (server_stream, peer_addr) = listener.accept()?;
+
+    let token = table.insert(server_stream, peer_addr)?;
+    table.register_with_loop(token, &mut event_loop)?;
+
+    // Initial state: not backpressured -> desired_flags has READABLE, not WRITABLE.
+    {
+        let conn = table.get(token).expect("connection exists");
+        assert_eq!(conn.desired_flags(), EpollFlags::READABLE);
+    }
+
+    // Enqueue large payload to exceed high watermark (10 MB).
+    {
+        let conn = table.get_mut(token).expect("connection exists");
+        let large_payload = vec![0u8; 11 * 1024 * 1024];
+        conn.send_chunk(large_payload)?;
+
+        // Backpressure triggered: READABLE removed, WRITABLE added!
+        assert_eq!(conn.desired_flags(), EpollFlags::WRITABLE);
+        assert!(conn.is_backpressured());
+    }
+
+    // Sync interest with event loop.
+    table.sync_interest(token, &mut event_loop)?;
+
+    // Clean up.
+    table.remove_and_deregister(token, &mut event_loop);
+    drop(client_stream);
+    Ok(())
+}
+
+#[test]
+fn test_connection_table_capacity_and_shutdown_drain() -> Result<(), Box<dyn std::error::Error>> {
+    use cachedb::net::connection::ConnectionTable;
+    use cachedb::net::event_loop::EventLoop;
+    use cachedb::net::sys::EpollFlags;
+
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?;
+
+    let mut event_loop = EventLoop::new()?;
+    let mut table = ConnectionTable::with_max_connections(2);
+
+    // Connect client 1 and client 2.
+    let client1 = TcpStream::connect(addr)?;
+    let (server1, peer1) = listener.accept()?;
+    let token1 = table.insert(server1, peer1)?;
+    table.register_with_loop(token1, &mut event_loop)?;
+
+    let client2 = TcpStream::connect(addr)?;
+    let (server2, peer2) = listener.accept()?;
+    let token2 = table.insert(server2, peer2)?;
+    table.register_with_loop(token2, &mut event_loop)?;
+
+    assert!(table.is_at_capacity());
+    assert_eq!(table.remaining_capacity(), 0);
+
+    // Attempt client 3: rejected with ConnectionRefused.
+    let client3 = TcpStream::connect(addr)?;
+    let (server3, peer3) = listener.accept()?;
+    let res3 = table.insert(server3, peer3);
+    assert!(res3.is_err());
+    assert_eq!(
+        res3.unwrap_err().kind(),
+        std::io::ErrorKind::ConnectionRefused
+    );
+
+    // Queue response bytes into client 1.
+    {
+        let conn1 = table.get_mut(token1).expect("client 1 exists");
+        conn1.send_slice(b"queued response")?;
+    }
+
+    // Initiate shutdown:
+    // Client 2 has empty write queue -> immediately closed and deregistered.
+    // Client 1 has pending bytes -> marked closing, keeps WRITABLE.
+    table.initiate_shutdown(&mut event_loop);
+
+    assert_eq!(table.len(), 1);
+    assert!(!table.contains(token2));
+    assert!(table.contains(token1));
+
+    {
+        let conn1 = table.get_mut(token1).expect("client 1 exists");
+        assert!(conn1.is_closing());
+        assert_eq!(conn1.desired_flags(), EpollFlags::WRITABLE);
+        // Flush client 1.
+        let status = conn1.flush_outgoing()?;
+        assert_eq!(status, cachedb::net::connection::WriteStatus::Complete);
+        assert!(conn1.is_closed());
+    }
+
+    // Sync interest on closed connection -> deregisters.
+    table.sync_interest(token1, &mut event_loop)?;
+    table.remove(token1);
+    assert!(table.is_empty());
+
+    drop(client1);
+    drop(client2);
+    drop(client3);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_nonblocking_echo_server_limits_and_idle_timeout() -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?;
+
+    let mut server = echo_nonblocking::NonBlockingEchoServer::with_config(
+        listener,
+        2,
+        Some(Duration::from_millis(80)),
+        Duration::from_millis(40),
+        Duration::from_secs(1),
+    )?;
+
+    // Run ticks in background thread.
+    let server_handle = thread::spawn(move || -> std::io::Result<()> {
+        server.run_ticks(30, Some(Duration::from_millis(20)))
+    });
+
+    // Connect client 1 and client 2.
+    let mut client1 = TcpStream::connect(addr)?;
+    let mut client2 = TcpStream::connect(addr)?;
+
+    // Send data on client 1.
+    client1.write_all(b"ping")?;
+    let mut buf = [0u8; 4];
+    client1.read_exact(&mut buf)?;
+    assert_eq!(&buf, b"ping");
+
+    // Connect client 3: should be rejected by server.
+    let client3 = TcpStream::connect(addr)?;
+    // Sleep briefly to let server sweep and disconnect idle client 2.
+    thread::sleep(Duration::from_millis(150));
+
+    // Client 2 was idle for > 80ms, so server closed it.
+    let mut eof_buf = [0u8; 16];
+    let n = client2.read(&mut eof_buf)?;
+    assert_eq!(
+        n, 0,
+        "idle client 2 should have been closed by idle sweeper"
+    );
+
+    drop(client1);
+    drop(client2);
+    drop(client3);
+    let _ = server_handle.join();
     Ok(())
 }
