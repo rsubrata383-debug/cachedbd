@@ -63,6 +63,8 @@ Progress is tracked through the milestone checklist in [`cachedb-roadmap.md`](ca
 cachedb/
 ├── Cargo.toml                  # Project metadata, lints, dependencies
 ├── README.md                   # Project overview and developer guide
+├── LICENSE-MIT                 # MIT license
+├── LICENSE-APACHE              # Apache 2.0 license
 ├── AGENTS.md                   # Rust engineering guidelines and coding rules
 ├── cachedb-roadmap.md          # Multi-phase project roadmap and checklist
 ├── docs/
