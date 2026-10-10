@@ -1,0 +1,313 @@
+# Cachedb Wire Protocol Specification (v0.1 draft)
+
+This document defines the binary wire protocol used for communication between Cachedb clients and the `cachedbd` server.
+
+> **Status:** v0.1 draft (will be frozen alongside all core specs at the end of Week 2).
+
+---
+
+## 1. Protocol Overview
+
+The Cachedb wire protocol is a framed, pure-binary protocol designed for high throughput, low latency, and efficient pipelining.
+
+Key design attributes:
+- **Encoding**: Pure binary. Payloads use typed binary items without text parsing overhead.
+- **Byte Order**: Big-Endian (Network Byte Order) for all multi-byte header fields and numbers.
+- **Framing**: Fixed 14-byte header containing a 4-byte (`u32`) payload length prefix.
+- **Multiplexed Pipelining**: 32-bit `request_id` pairs asynchronous requests and responses.
+- **Push Notifications**: Unsolicited messages (pub/sub, replication) use `FLAG_PUSH` and `request_id = 0`.
+- **Streaming Chunks**: Large messages can be split across multiple frames using `FLAG_MORE_FRAMES`.
+
+---
+
+## 2. Frame Header Format
+
+Every frame begins with a fixed 14-byte header:
+
+```text
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|          Magic (2B)           |  Version (1B) |   Flags (1B)  |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                          Request ID (4B)                      |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|          Opcode (2B)          |       Payload Length (4B)     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+                               +
+|                           (continued)                         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+### Header Fields:
+
+| Field | Size | Type | Byte Order | Description |
+|---|---|---|---|---|
+| `magic` | 2 bytes | Bytes | — | Fixed protocol identifier: `0xCA 0xDB` ("CADB"). Rejects non-protocol traffic immediately. |
+| `version` | 1 byte | u8 | — | Protocol version. Initial version is `1` (`0x01`). |
+| `flags` | 1 byte | Bitfield | — | Message control flags (see Flags section). |
+| `request_id` | 4 bytes | u32 | Big-Endian | Identifier chosen by client to pair responses. Must be `0` for push frames. |
+| `opcode` | 2 bytes | u16 | Big-Endian | Operation identifier (`0x0001` = HELLO, `0x0002` = COMMAND, `0x0003` = PUSH). |
+| `payload_len`| 4 bytes | u32 | Big-Endian | Byte size of the payload following this header. |
+
+---
+
+## 3. Flags Field (1 byte)
+
+The `flags` byte controls message routing and framing behavior:
+
+| Bit | Hex | Name | Meaning |
+|---|---|---|---|
+| Bit 0 | `0x01` | `FLAG_RESPONSE` | `0` = Request from client; `1` = Response from server. |
+| Bit 1 | `0x02` | `FLAG_ERROR` | `1` = Payload contains a structured error response. |
+| Bit 2 | `0x04` | `FLAG_PUSH` | `1` = Unsolicited server push message. `request_id` must be `0`. |
+| Bit 3 | `0x08` | `FLAG_MORE_FRAMES` | `1` = Chunked frame; additional frames follow for the same `request_id`. |
+| Bits 4-7 | `0xF0` | Reserved | Must be set to `0`. Reserved for future protocol revisions. |
+
+---
+
+## 4. Payload Items and Encoding
+
+The payload begins immediately after the 14-byte header and consists of typed items.
+
+### 4.1 Varint and Zigzag Encoding
+Lengths and integers use variable-length encoding:
+- **Unsigned Varint (LEB128)**: 7 data bits per byte with MSB (bit 7) as continuation flag.
+- **Signed Varint (Zigzag)**: Maps signed values to positive integers before LEB128:
+  $$\text{zigzag}(n) = (n \ll 1) \oplus (n \gg 63)$$
+  For example, `0 -> 0`, `-1 -> 1`, `1 -> 2`, `42 -> 84` (`0x54`).
+
+### 4.2 Item Type Tags
+
+| Tag | Name | Format | Description |
+|---|---|---|---|
+| `0x00` | `Nil` | Tag only (1 byte) | Represents missing or null value. |
+| `0x01` | `Int` | Tag + zigzag varint | 64-bit signed integer. |
+| `0x02` | `Float` | Tag + 8 bytes (Big-Endian) | IEEE-754 64-bit floating point number. |
+| `0x03` | `Bool` | Tag + 1 byte | `0x00` for false, `0x01` for true. |
+| `0x04` | `Text` | Tag + varint byte length + UTF-8 bytes | UTF-8 encoded string. |
+| `0x05` | `Bytes` | Tag + varint byte length + raw bytes | Arbitrary binary data. |
+| `0x06` | `Array` | Tag + varint count + sequence of typed items | Ordered list of items. |
+| `0x07` | `Map` | Tag + varint count + key-value pairs | Ordered pairs of typed items. |
+| `0x08` | `Error` | Tag + varint code + varint length + UTF-8 string | Structured error object. |
+
+### 4.3 Extensibility: Forward Compatibility for New Types
+To add new data types without breaking existing clients:
+- Every future type tag ($\ge 0x09$) must place an unsigned varint byte length directly after the tag.
+- Older clients that encounter an unknown type tag can read the varint length and safely skip past the unknown item.
+
+---
+
+## 5. Handshake and Version Negotiation (HELLO)
+
+Upon opening a TCP connection, clients should perform a `HELLO` exchange:
+
+1. **Client Request**:
+   - `opcode = 0x0001` (HELLO), `flags = 0x00` (Request).
+   - Payload: Array of 3 items:
+     - Protocol version (`Int`: `1`)
+     - Client name (`Text`: e.g. `"cachedb-cli 0.1.0"`)
+     - Auth token / credentials (`Text` or `Nil`)
+2. **Server Response**:
+   - `opcode = 0x0001`, `flags = 0x01` (FLAG_RESPONSE).
+   - Payload: Map containing server information:
+     - `"server_version"`: `"0.1.0"`
+     - `"protocol_version"`: `1`
+     - `"client_id"`: assigned connection ID (`Int`)
+3. **Incompatible Version**:
+   - Server returns an error response with code `1001` (`ERR_UNSUPPORTED_PROTOCOL_VERSION`) and closes the connection.
+
+---
+
+## 6. Error Replies
+
+When an operation fails:
+- Header has `flags = FLAG_RESPONSE | FLAG_ERROR` (`0x03`).
+- `request_id` matches the failed request.
+- Payload contains an `Error` item (`0x08`):
+  - Varint: numeric error code (e.g. `2001` for unknown command).
+  - Varint: UTF-8 message byte length.
+  - Bytes: human-readable error string.
+
+---
+
+## 7. Push Messages vs Reply Matching
+
+- **Standard Reply**: `flags` has bit 0 set (`FLAG_RESPONSE = 0x01`), bit 2 is 0. The client uses `request_id` to route the response to the waiting request future/callback.
+- **Push Message**: `flags` has bit 2 set (`FLAG_PUSH = 0x04`), `flags = 0x05`. `request_id` is always `0x00000000`. The client routes the payload directly to pub/sub listeners or replication event handlers.
+
+---
+
+## 8. Split Frames and Large Payloads
+
+For streaming or payloads split across frames:
+- Sender sets `FLAG_MORE_FRAMES` (`0x08`) on all chunks except the last.
+- All chunks share the same `request_id`.
+- Receiver buffers and concatenates payload chunks until a frame with `FLAG_MORE_FRAMES = 0` arrives.
+
+---
+
+## 9. Limits and Configuration
+
+To prevent denial-of-service and buffer exhaustion:
+
+| Limit | Default Value | Configurable | Behavior on Breach |
+|---|---|---|---|
+| **Max Frame Size** | 64 MB (67,108,864 bytes) | Yes (`max_frame_size` in `cachedb.toml`) | Connection closed immediately |
+| **Max Argument Count** | 65,536 items | Yes (`max_arguments`) | Error reply returned |
+| **Max Key Size** | 64 KB (65,536 bytes) | Yes (`max_key_size`) | Error reply returned |
+| **Max Value Size** | 32 MB (default) | Yes (`max_value_size`) | Error reply returned |
+
+> **Note on Large Values**: The default `max_frame_size` is 64 MB. For workloads requiring up to 100 MB values (such as Phase 2 Week 15 benchmarks), operators can raise `max_frame_size = 134217728` (128 MB) in `cachedb.toml`, or transmit values across multiple chunk frames using `FLAG_MORE_FRAMES`.
+
+---
+
+## 10. Concrete Hex Examples (Byte-by-Byte)
+
+All multi-byte integers are Big-Endian.
+
+### Example 1: Request (`PING`)
+Client sends `PING` with `request_id = 1`:
+
+```text
+CA DB             -- Magic: "CADB" (2 bytes)
+01                -- Version: 1 (1 byte)
+00                -- Flags: 0x00 (Request, 1 byte)
+00 00 00 01       -- Request ID: 1 (4 bytes, Big-Endian)
+00 02             -- Opcode: 0x0002 (COMMAND, 2 bytes)
+00 00 00 08       -- Payload length: 8 bytes (4 bytes)
+-- Header total: 14 bytes
+
+06                -- Type: Array (1 byte)
+01                -- Array count: 1 element (1 byte)
+04                -- Type: Text (1 byte)
+04                -- Text length: 4 bytes (1 byte)
+70 69 6E 67       -- UTF-8: "ping" (4 bytes)
+-- Payload total: 8 bytes
+```
+
+---
+
+### Example 2: Reply (`PONG`)
+Server replies to request ID 1:
+
+```text
+CA DB             -- Magic: "CADB" (2 bytes)
+01                -- Version: 1 (1 byte)
+01                -- Flags: 0x01 (FLAG_RESPONSE, 1 byte)
+00 00 00 01       -- Request ID: 1 (4 bytes, Big-Endian)
+00 02             -- Opcode: 0x0002 (COMMAND, 2 bytes)
+00 00 00 06       -- Payload length: 6 bytes (4 bytes)
+-- Header total: 14 bytes
+
+04                -- Type: Text (1 byte)
+04                -- Text length: 4 bytes (1 byte)
+70 6F 6E 67       -- UTF-8: "pong" (4 bytes)
+-- Payload total: 6 bytes
+```
+
+---
+
+### Example 3: Error Reply (Unknown Command)
+Server returns error for request ID 2:
+
+```text
+CA DB             -- Magic: "CADB" (2 bytes)
+01                -- Version: 1 (1 byte)
+03                -- Flags: 0x03 (FLAG_RESPONSE | FLAG_ERROR, 1 byte)
+00 00 00 02       -- Request ID: 2 (4 bytes, Big-Endian)
+00 02             -- Opcode: 0x0002 (COMMAND, 2 bytes)
+00 00 00 13       -- Payload length: 19 bytes (4 bytes, 0x13 = 19)
+-- Header total: 14 bytes
+
+08                -- Type: Error (1 byte)
+D1 0F             -- Error Code: 2001 (2 bytes, LEB128 varint)
+0F                -- Message length: 15 bytes (1 byte)
+75 6E 6B 6E 6F 77 -- UTF-8: "unknow" (6 bytes)
+6E 20 63 6F 6D 6D -- UTF-8: "n comm" (6 bytes)
+61 6E 64          -- UTF-8: "and" (3 bytes)
+-- Payload total: 1 + 2 + 1 + 15 = 19 bytes
+```
+
+---
+
+### Example 4: Push Message (Pub/Sub Event)
+Server pushes message to subscriber (`request_id = 0`):
+
+```text
+CA DB             -- Magic: "CADB" (2 bytes)
+01                -- Version: 1 (1 byte)
+05                -- Flags: 0x05 (FLAG_RESPONSE | FLAG_PUSH, 1 byte)
+00 00 00 00       -- Request ID: 0 (4 bytes, Big-Endian)
+00 03             -- Opcode: 0x0003 (PUSH_MESSAGE, 2 bytes)
+00 00 00 0F       -- Payload length: 15 bytes (4 bytes, 0x0F = 15)
+-- Header total: 14 bytes
+
+06                -- Type: Array (1 byte)
+02                -- Array count: 2 elements (1 byte)
+04 04 6E 65 77 73 -- Item 1: Text ("news", 6 bytes: tag + len + 4 chars)
+04 05 68 65 6C 6C -- Item 2: Text ("hello", 7 bytes: tag + len + 5 chars)
+6F
+-- Payload total: 1 + 1 + 6 + 7 = 15 bytes
+```
+
+---
+
+### Example 5: Pipelined Pair (Two Requests Back-to-Back)
+Client sends `PUT user 42` (ID 10) followed by `FETCH user` (ID 11):
+
+```text
+-- Frame 1: PUT user 42 (Request ID 10)
+CA DB             -- Magic: "CADB" (2 bytes)
+01                -- Version: 1 (1 byte)
+00                -- Flags: 0x00 (Request, 1 byte)
+00 00 00 0A       -- Request ID: 10 (4 bytes, Big-Endian)
+00 02             -- Opcode: 0x0002 (COMMAND, 2 bytes)
+00 00 00 0F       -- Payload length: 15 bytes (4 bytes, 0x0F = 15)
+-- Header 1: 14 bytes
+06 03             -- Array of 3 items (2 bytes)
+04 03 70 75 74    -- Item 1: Text "put" (5 bytes: tag + len + 3 chars)
+04 04 75 73 65 72 -- Item 2: Text "user" (6 bytes: tag + len + 4 chars)
+01 54             -- Item 3: Int 42 (2 bytes: tag + zigzag varint 84 = 0x54)
+-- Payload 1: 2 + 5 + 6 + 2 = 15 bytes
+
+-- Frame 2: FETCH user (Request ID 11)
+CA DB             -- Magic: "CADB" (2 bytes)
+01                -- Version: 1 (1 byte)
+00                -- Flags: 0x00 (Request, 1 byte)
+00 00 00 0B       -- Request ID: 11 (4 bytes, Big-Endian)
+00 02             -- Opcode: 0x0002 (COMMAND, 2 bytes)
+00 00 00 0F       -- Payload length: 15 bytes (4 bytes, 0x0F = 15)
+-- Header 2: 14 bytes
+06 02             -- Array of 2 items (2 bytes)
+04 05 66 65 74 63 -- Item 1: Text "fetch" (7 bytes: tag + len + 5 chars)
+68
+04 04 75 73 65 72 -- Item 2: Text "user" (6 bytes: tag + len + 4 chars)
+-- Payload 2: 2 + 7 + 6 = 15 bytes
+```
+
+---
+
+### Example 6: Split Frame (Chunked Large Payload)
+A response split across two chunk frames with `request_id = 42`:
+
+```text
+-- Chunk 1: FLAG_MORE_FRAMES is set (0x09)
+CA DB             -- Magic: "CADB" (2 bytes)
+01                -- Version: 1 (1 byte)
+09                -- Flags: 0x09 (FLAG_RESPONSE | FLAG_MORE_FRAMES, 1 byte)
+00 00 00 2A       -- Request ID: 42 (4 bytes, Big-Endian)
+00 02             -- Opcode: 0x0002 (COMMAND, 2 bytes)
+00 00 00 05       -- Chunk length: 5 bytes (4 bytes)
+-- Header 1: 14 bytes
+AA BB CC DD EE    -- Chunk 1 payload (5 bytes)
+
+-- Chunk 2: Final frame (FLAG_MORE_FRAMES cleared, 0x01)
+CA DB             -- Magic: "CADB" (2 bytes)
+01                -- Version: 1 (1 byte)
+01                -- Flags: 0x01 (FLAG_RESPONSE, 1 byte)
+00 00 00 2A       -- Request ID: 42 (4 bytes, Big-Endian)
+00 02             -- Opcode: 0x0002 (COMMAND, 2 bytes)
+00 00 00 04       -- Chunk length: 4 bytes (4 bytes)
+-- Header 2: 14 bytes
+11 22 33 44       -- Chunk 2 payload (4 bytes)
+```

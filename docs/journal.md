@@ -125,3 +125,53 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - **Choice**: Deferred for now. We will add a Linux sanitizer CI workflow before Week 5 (when parser fuzzing begins).
 - **Reason**: Sanitizers require nightly toolchains and Linux runners. At this stage, all code is safe Rust with no unsafe blocks. Week 5 fuzzing is the appropriate milestone to enforce sanitizers.
 - **What would make us revisit it**: If any unsafe block or C-FFI is introduced prior to Week 5.
+
+---
+
+## 2026-10-10: Phase 0 Week 2 - Wire Protocol Specification Decisions
+
+### Decision 12: Byte Order (Endianness)
+
+- **Date**: 2026-10-10
+- **Options**:
+  - Big-Endian (Network Byte Order): Standard for network protocols; reads naturally in Wireshark and hex dumps.
+  - Little-Endian: Matches native CPU architecture on x86 and ARM64.
+- **Choice**: Big-Endian.
+- **Reason**: Standard internet conventions make packet captures easier to inspect, and endian conversion cost is negligible.
+- **What would make us revisit it**: If profiling shows byte-swapping overhead on packet headers is significant under 200k ops/sec.
+
+---
+
+### Decision 13: Protocol Encoding Format
+
+- **Date**: 2026-10-10
+- **Options**:
+  - Pure Binary (Header + typed payload items): Fast zero-copy parsing, compact, no string escape overhead.
+  - Text-based (RESP or HTTP-like): Human-readable over raw netcat, but slower and requires string parsing.
+- **Choice**: Pure Binary.
+- **Reason**: Primary goals are extreme speed and low latency (200k ops/sec, < 1ms p99). `cachedb-cli` provides human interaction.
+- **What would make us revisit it**: If manual debugging with raw TCP tools without our CLI is deemed mandatory.
+
+---
+
+### Decision 14: Payload Length Field Size and Large Value Handling
+
+- **Date**: 2026-10-10
+- **Options**:
+  - 4 bytes (`u32`): Fixed header offset, handles payloads up to limits (32 MB / 64 MB default).
+  - 2 bytes (`u16`): Saves 2 bytes per frame header, but limits single frame payloads to 64 KB.
+- **Choice**: 4 bytes `u32` length field, with a configurable `max_frame_size` (default 64 MB).
+- **Reason**: Simplifies frame handling so multi-frame chunking is only needed for massive payloads. The 64 MB limit can be raised in `cachedb.toml`.
+- **What would make us revisit it**: We may revisit chunking with the `more-frames` flag in Phase 2, Week 15 when testing 100 MB values to prevent huge contiguous memory allocations.
+
+---
+
+### Decision 15: Message Framing and Boundaries
+
+- **Date**: 2026-10-10
+- **Options**:
+  - Length-prefixed (`payload_len` in 14-byte header): Explicit buffer sizing, zero delimiter scanning or escaping.
+  - Delimiter-terminated (`\r\n` or sentinel byte): Allows unbounded streaming without knowing length upfront.
+- **Choice**: Length-prefixed header.
+- **Reason**: Safe against delimiter injection attacks and eliminates byte-by-byte scanning in the hot path.
+- **What would make us revisit it**: If streaming generators cannot calculate payload length in advance (multi-frame chunking solves this).
