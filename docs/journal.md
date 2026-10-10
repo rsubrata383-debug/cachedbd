@@ -408,6 +408,80 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - Removed non-existent `cachedb.md` entry from the repository layout tree in `cachedb-roadmap.md`.
   - Verified no dangling links to `README.MD` or `cachedb.md` exist in the repository.
 
+---
+
+## 2026-10-10: Phase 1 Week 3 Step 1 — Blocking TCP Echo Server & Socket Mechanics
+
+- **Date**: 2026-10-10
+- **Summary**: Implemented an educational blocking TCP echo server in `examples/echo_blocking.rs` and an integration test in `tests/integration.rs` to understand low-level socket semantics using only safe Rust and `std::net`.
+- **Socket Mechanics Learned**:
+  - **`bind`**: Binds a socket file descriptor to a local IP address and port (`127.0.0.1:7380`).
+  - **`listen`**: Marks the socket as passive to queue pending incoming connections (connection backlog).
+  - **`accept`**: Blocks until a client completes the TCP 3-way handshake; creates a brand-new socket file descriptor for that specific client connection.
+  - **`read`**: Copies bytes from the kernel receive buffer to user space; in blocking mode, puts the calling thread to sleep until at least 1 byte arrives.
+  - **Partial Reads**: TCP is a stream-oriented protocol without inherent message boundaries. A `read` call can return any slice length from 1 to `buf.len()`. Handlers must never assume an entire message arrives in one read.
+  - **Client Disconnect (EOF)**: When a client terminates or shuts down transmission, the OS receives a TCP FIN packet; `stream.read()` returns `Ok(0)`, signaling End-Of-File.
+  - **`write_all`**: Feeds bytes into the kernel transmit buffer, automatically looping until all bytes are queued.
+- **The Core Problem with Blocking Sockets**:
+  - **Head-of-Line Blocking**: Because a single thread handles one client at a time, calling `read` blocks the entire server if that client is slow or idle. No new clients can be accepted, and no existing clients can make progress.
+  - Spawning a thread per client does not scale to tens of thousands of concurrent connections due to thread stack memory consumption (typically 2–8 MB per thread) and CPU context-switching churn.
+- **Next Step Motivation**: This motivates Step 2 — switching sockets to non-blocking mode (`O_NONBLOCK`) and building a single-threaded event loop driven by Linux `epoll` notifications.
+
+---
+
+## 2026-10-10: Phase 1 Week 3 Step 2 — Linux Epoll Wrapper & Scoped Unsafe Isolation
+
+- **Date**: 2026-10-10
+- **Summary**: Implemented the low-level Linux `epoll` system call abstraction in `src/net/sys.rs`, added the `libc` target dependency in `Cargo.toml`, and relaxed `unsafe_code` from `"forbid"` to `"deny"` per Decision 27.
+- **Implementation Details**:
+  - **Scoped Unsafe Policy**: `Cargo.toml` now specifies `unsafe_code = "deny"`. The `#![allow(unsafe_code)]` attribute is strictly limited to `src/net/sys.rs`. All other modules across the codebase remain 100% safe Rust.
+  - **Explicit `// SAFETY:` Comments**: Every FFI call (`epoll_create1`, `epoll_ctl`, `epoll_wait`, `close`) has a dedicated safety comment documenting why it is sound (valid pointers, allocated slices, owned file descriptors).
+  - **Safe RAII Wrapper (`Epoll`)**: Automatically invokes `libc::close(fd)` on `Drop`, preventing file descriptor leaks.
+  - **Event Operations**: Wraps `epoll_ctl` operations into safe methods `add`, `modify`, `delete`, and `wait` with type-safe `EpollFlags` bitflags.
+  - **Cross-Platform Gating**: Gated real epoll behind `#[cfg(target_os = "linux")]`, with safe stub methods on non-Linux systems returning `io::ErrorKind::Unsupported`. This ensures `cargo check`, `cargo test`, and `cargo clippy` pass on Windows host development, while the real epoll loop runs natively under Linux/WSL2.
+
+---
+
+## 2026-10-10: Phase 1 Week 3 Step 3 — EventLoop Abstraction & Zero-Cost Dispatch
+
+- **Date**: 2026-10-10
+- **Summary**: Implemented the single-threaded `EventLoop` abstraction in `src/net/event_loop.rs` over `sys::Epoll`, supporting descriptor registration, zero-lock/zero-alloc event dispatch, and monotonic timer scheduling.
+- **Architectural Details**:
+  - **Zero Unsafe Code**: The event loop contains zero `unsafe` blocks, driving I/O exclusively through the safe `sys::Epoll` interface.
+  - **Zero-Lock Handler Trait**: Instead of storing closures or `Box<dyn FnMut>` requiring `Rc<RefCell<...>>`, the event loop accepts `&mut H` where `H: Handler`. The caller maintains sole, direct ownership of database and connection state with zero synchronization overhead.
+  - **Monotonic Timer Min-Heap**: Scheduled timers use `std::collections::BinaryHeap` ordered by monotonic `Instant`. Each polling tick calculates the exact sleep duration needed by the earliest pending timer, ensuring precise expiration dispatch without busy spinning.
+  - **Zero-Allocation Hot Path**: The event loop pre-allocates an event buffer of 64 `Event` slots on initialization, eliminating per-tick heap allocations during high-throughput network polling.
+
+---
+
+## 2026-10-10: Phase 1 Week 3 Step 4 — Non-Blocking Echo Server & Partial I/O Handling
+
+- **Date**: 2026-10-10
+- **Summary**: Implemented an event-driven, non-blocking TCP echo server in `examples/echo_nonblocking.rs` driven by `EventLoop`, handling `WouldBlock` (`EAGAIN`), partial reads, partial writes, dynamic epoll interest toggling, and clean client disconnects.
+- **Architectural Details**:
+  - **Non-blocking Loop Semantics**: Configured listener and client streams with `set_nonblocking(true)`. When accept, read, or write exhaust available data or kernel buffers, operations return `io::ErrorKind::WouldBlock` (`EAGAIN`) without stalling the thread.
+  - **Partial Writes and Send Queues**: Because TCP transmit buffers are bounded, `write()` can accept fewer bytes than requested. Unwritten bytes are buffered in per-client `VecDeque<u8>` send queues.
+  - **Dynamic Interest Registration**: In level-triggered epoll, a socket with available transmit buffer space continuously triggers `WRITABLE`. To avoid 100% CPU busy-looping, the server registers `WRITABLE` only when its `send_queue` is non-empty, and drops back to `READABLE` as soon as the queue drains.
+  - **Overcoming Head-of-Line Blocking**: Multiple clients connect and exchange data simultaneously on a single thread. Unlike the Step 1 blocking model, a slow or idle client no longer pauses other clients or blocks incoming connections.
+
+---
+
+## 2026-10-10: Phase 1 Week 3 Step 5 — Signal Handling (SIGINT/SIGTERM) & Graceful EventLoop Termination
+
+- **Date**: 2026-10-10
+- **Summary**: Implemented POSIX signal handling (`SIGINT`, `SIGTERM`) in `src/net/sys.rs` and integrated graceful shutdown mechanics into `EventLoop` and `examples/echo_nonblocking.rs`.
+- **Architectural & Safety Details**:
+  - **Async-Signal Safety**: In POSIX systems, signal handlers may interrupt threads at arbitrary instruction boundaries; only async-signal-safe functions may be called from a signal handler. We store the shutdown request into a global `AtomicBool` (`SHUTDOWN_REQUESTED`) using `Ordering::Relaxed`, which is guaranteed lock-free, atomic, and signal-safe.
+  - **Immediate Wake-up via `EINTR` (No `SA_RESTART`)**: Signal handlers are registered with `libc::sigaction` with `sa_flags = 0` (deliberately omitting `SA_RESTART`). When a signal arrives while the process is blocked in `epoll_wait`, the kernel immediately unblocks the syscall with `-1` and sets `errno = EINTR`.
+  - **Handling Interrupted Syscalls**: `Epoll::wait` translates `ErrorKind::Interrupted` into `Ok(0)` rather than propagating an unhandled error. Immediately upon return, `EventLoop::run_once` and `EventLoop::run` inspect `sys::is_shutdown_requested()`, mark `self.stop()`, and terminate the loop gracefully.
+  - **Cross-Platform Compatibility**: On Linux targets, native `sigaction` traps `SIGINT` and `SIGTERM`. On non-Linux targets (such as Windows development hosts), safe stub implementations allow tests, examples, and tooling to compile and execute predictably.
+  - **Completion of Week 3**: Week 3 networking basics are now complete (blocking TCP echo exploration, scoped unsafe `epoll` wrapper, single-threaded zero-cost `EventLoop`, non-blocking echo server with dynamic interest registration, and signal-driven graceful shutdown).
+
+
+
+
+
+
 
 
 
