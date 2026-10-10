@@ -175,3 +175,13 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - **Choice**: Length-prefixed header.
 - **Reason**: Safe against delimiter injection attacks and eliminates byte-by-byte scanning in the hot path.
 - **What would make us revisit it**: If streaming generators cannot calculate payload length in advance (multi-frame chunking solves this).
+
+---
+
+### Decision 16 / Lesson: Hex Examples Verification and Partial TCP Reads
+
+- **Date**: 2026-10-10
+- **Context**: The original Example 6 used dummy placeholder bytes for multi-frame chunks (`AA BB...`), which failed protocol item decoding when joined because `0xAA` is not a valid type tag.
+- **Fix**: Replaced Example 6 with a real `PING` request frame arriving across two TCP reads cut mid-payload. Added Example 7 with a `PONG` response frame cut mid-header after 5 bytes. Both represent realistic non-blocking TCP socket reads where the parser must buffer partial data without error.
+- **Key Lesson**: *"Hex examples must be checked by a script."* Manually written hex dumps are error-prone; running automated decoders against example bytes ensures the spec is 100% executable and correct.
+- **Open Questions Recorded**: Multi-frame application-level chunking (`FLAG_MORE_FRAMES`) details are kept under question for the owner (interleaving rules, timeout policies, push applicability).

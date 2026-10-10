@@ -287,27 +287,53 @@ CA DB             -- Magic: "CADB" (2 bytes)
 
 ---
 
-### Example 6: Split Frame (Chunked Large Payload)
-A response split across two chunk frames with `request_id = 42`:
+### Example 6: Split Frame Arriving in Two TCP Reads (Cut in Payload)
+A single valid `PING` request frame (total 22 bytes from Example 1) split across two separate TCP socket reads:
 
 ```text
--- Chunk 1: FLAG_MORE_FRAMES is set (0x09)
+-- Read 1 (16 bytes): Full 14-byte header + first 2 bytes of payload
 CA DB             -- Magic: "CADB" (2 bytes)
 01                -- Version: 1 (1 byte)
-09                -- Flags: 0x09 (FLAG_RESPONSE | FLAG_MORE_FRAMES, 1 byte)
-00 00 00 2A       -- Request ID: 42 (4 bytes, Big-Endian)
+00                -- Flags: 0x00 (Request, 1 byte)
+00 00 00 01       -- Request ID: 1 (4 bytes, Big-Endian)
 00 02             -- Opcode: 0x0002 (COMMAND, 2 bytes)
-00 00 00 05       -- Chunk length: 5 bytes (4 bytes)
--- Header 1: 14 bytes
-AA BB CC DD EE    -- Chunk 1 payload (5 bytes)
+00 00 00 08       -- Payload length: 8 bytes (4 bytes)
+06 01             -- Payload start: Array tag (1B) + count 1 (1B)
+-- Read 1 total: 16 bytes received so far
 
--- Chunk 2: Final frame (FLAG_MORE_FRAMES cleared, 0x01)
+-- Read 2 (6 bytes): Remaining payload bytes arrive in next socket read
+04 04             -- Text tag (1B) + length 4 (1B)
+70 69 6E 67       -- UTF-8: "ping" (4 bytes)
+-- Read 2 total: 6 bytes
+
+-- Joined Frame (22 bytes total):
+CA DB 01 00 00 00 00 01 00 02 00 00 00 08 06 01 04 04 70 69 6E 67
+```
+
+> **Parser Rule:** The parser reads the 14-byte header and sees `payload_len = 8`. Having only read 2 payload bytes so far, it must keep the 16 bytes in its connection read buffer and wait for more bytes from the socket. It must not report an error or drop the connection.
+
+---
+
+### Example 7: Split Frame Arriving in Two TCP Reads (Cut in Header)
+A single valid `PONG` response frame (total 20 bytes from Example 2) cut in the middle of the 14-byte header after only 5 bytes:
+
+```text
+-- Read 1 (5 bytes): Partial header (first 5 bytes)
 CA DB             -- Magic: "CADB" (2 bytes)
 01                -- Version: 1 (1 byte)
 01                -- Flags: 0x01 (FLAG_RESPONSE, 1 byte)
-00 00 00 2A       -- Request ID: 42 (4 bytes, Big-Endian)
+00                -- First byte of Request ID (1 byte)
+-- Read 1 total: 5 bytes
+
+-- Read 2 (15 bytes): Remaining 9 header bytes + full 6-byte payload
+00 00 01          -- Remaining 3 bytes of Request ID (3 bytes)
 00 02             -- Opcode: 0x0002 (COMMAND, 2 bytes)
-00 00 00 04       -- Chunk length: 4 bytes (4 bytes)
--- Header 2: 14 bytes
-11 22 33 44       -- Chunk 2 payload (4 bytes)
+00 00 00 06       -- Payload length: 6 bytes (4 bytes)
+04 04 70 6F 6E 67 -- Payload: Text "pong" (6 bytes)
+-- Read 2 total: 15 bytes
+
+-- Joined Frame (20 bytes total):
+CA DB 01 01 00 00 00 01 00 02 00 00 00 06 04 04 70 6F 6E 67
 ```
+
+> **Parser Rule:** Because the buffer contains only 5 bytes (less than the required 14-byte header), the parser cannot determine the full frame size yet. It retains the 5 bytes in the connection buffer without error and yields control until the socket is readable again.
