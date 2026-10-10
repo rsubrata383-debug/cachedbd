@@ -254,3 +254,66 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - **Choice**: 1 KB (1,024 bytes default, configurable).
 - **Reason**: Protects against memory bloat from oversized keys while providing ample room for standard naming conventions. Operators with special requirements can raise `max_key_size` in `cachedb.toml`.
 - **What would make us revisit it**: If major target workloads require embedding large serialized payloads or multi-field tokens directly within key strings.
+
+---
+
+## 2026-10-10: Phase 0 Week 2 - Command Language Specification Decisions
+
+### Decision 22: Command Name Case Sensitivity
+
+- **Date**: 2026-10-10
+- **Options**:
+  - Case-Insensitive ASCII: Server converts command names to lowercase.
+  - Strictly Lowercase: Server requires exact lowercase bytes over the wire.
+- **Choice**: Strictly lowercase command names over the wire.
+- **Rule**: If a wire frame contains uppercase letters in the command name, the server returns error `2001` (`ERR_UNKNOWN_COMMAND`). The interactive client (`cachedb-cli`) converts the first word to lowercase before sending.
+- **Reason**: Maximum server dispatch speed via direct byte comparison with zero case-folding overhead on the network loop.
+- **What would make us revisit it**: If raw socket clients report significant user friction from case sensitivity errors.
+
+---
+
+### Decision 23: Result of `fetch` on Missing Key
+
+- **Date**: 2026-10-10
+- **Options**:
+  - Return `Nil` (`0x00`): Standard cache miss representation.
+  - Return Error `4001` (`ERR_KEY_NOT_FOUND`): Explicit error reply.
+- **Choice**: Return `Nil` (`0x00`).
+- **Reason**: Cache misses are standard expected states; returning errors forces expensive exception handling in client SDKs.
+- **What would make us revisit it**: If a future strict relational or document layer requires hard error propagation on missing items.
+
+---
+
+### Decision 24: Return Type of `drop`
+
+- **Date**: 2026-10-10
+- **Options**:
+  - `Int` count: Number of keys deleted (`1` if deleted, `0` if not present).
+  - `Bool`: `true` if deleted, `false` if not found.
+- **Choice**: `Int` count of dropped keys.
+- **Reason**: Consistent return shape that scales seamlessly from single-key deletion to multi-key deletion (`drop key1 key2 key3`).
+- **What would make us revisit it**: If saving a single byte on single-key deletions becomes critical.
+
+---
+
+### Decision 25: Return Type of `put`
+
+- **Date**: 2026-10-10
+- **Options**:
+  - `Bool`: `true` on store, `false` on conditional failure (`nx`/`xx`).
+  - `Text("ok")` on success, `Nil` on conditional failure.
+- **Choice**: `Bool` (`true` on success, `false` if `nx` or `xx` condition prevented write).
+- **Reason**: Unambiguous boolean success indicator; homogeneous return type regardless of whether conditions are used.
+- **What would make us revisit it**: If drop-in Redis wire compatibility (`"OK"`) is requested by users.
+
+---
+
+### Decision 26: Command Options Parsing Style
+
+- **Date**: 2026-10-10
+- **Options**:
+  - Keyword string arguments (e.g. `"nx"`, `"xx"` passed as trailing tokens).
+  - Positional arguments (fixed index in array).
+- **Choice**: Lowercase keyword string arguments (`"nx"`, `"xx"`).
+- **Reason**: Clean readability and straightforward extensibility for upcoming options (e.g. expiry TTL).
+- **What would make us revisit it**: If option parsing in the command dispatcher is measured to be a bottleneck.
