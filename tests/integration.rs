@@ -118,7 +118,12 @@ fn test_event_loop_shutdown_via_signal_flag() -> Result<(), Box<dyn std::error::
 
     struct NoopHandler;
     impl Handler for NoopHandler {
-        fn on_event(&mut self, _token: Token, _flags: EpollFlags) -> std::io::Result<()> {
+        fn on_event(
+            &mut self,
+            _event_loop: &mut EventLoop,
+            _token: Token,
+            _flags: EpollFlags,
+        ) -> std::io::Result<()> {
             Ok(())
         }
     }
@@ -279,7 +284,7 @@ fn test_nonblocking_echo_server_limits_and_idle_timeout() -> Result<(), Box<dyn 
 
     // Run ticks in background thread.
     let server_handle = thread::spawn(move || -> std::io::Result<()> {
-        server.run_ticks(30, Some(Duration::from_millis(20)))
+        server.run_ticks(100, Some(Duration::from_millis(20)))
     });
 
     // Connect client 1 and client 2.

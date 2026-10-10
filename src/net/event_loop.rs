@@ -28,7 +28,12 @@ pub trait Handler {
     /// # Errors
     ///
     /// May return an [`io::Error`] if processing the event encounters an unrecoverable I/O failure.
-    fn on_event(&mut self, token: Token, flags: EpollFlags) -> io::Result<()>;
+    fn on_event(
+        &mut self,
+        event_loop: &mut EventLoop,
+        token: Token,
+        flags: EpollFlags,
+    ) -> io::Result<()>;
 
     /// Invoked when a scheduled timer deadline expires.
     ///
@@ -37,7 +42,7 @@ pub trait Handler {
     /// # Errors
     ///
     /// May return an [`io::Error`] if timer processing encounters an unrecoverable failure.
-    fn on_timeout(&mut self, _timer_id: TimerId) -> io::Result<()> {
+    fn on_timeout(&mut self, _event_loop: &mut EventLoop, _timer_id: TimerId) -> io::Result<()> {
         Ok(())
     }
 }
@@ -216,20 +221,26 @@ impl EventLoop {
 
         // 2. Dispatch all expired timers.
         let now_after_wait = Instant::now();
+        let mut expired_timers = Vec::new();
         while let Some(earliest) = self.timers.peek() {
             if earliest.deadline <= now_after_wait {
                 if let Some(entry) = self.timers.pop() {
-                    handler.on_timeout(entry.timer_id)?;
+                    expired_timers.push(entry.timer_id);
                 }
             } else {
                 break;
             }
         }
+        for timer_id in expired_timers {
+            handler.on_timeout(self, timer_id)?;
+        }
 
         // 3. Dispatch I/O events.
-        for i in 0..num_events {
-            let event = self.events_buffer[i];
-            handler.on_event(event.token(), event.flags())?;
+        let mut ready_events = [Event::new(EpollFlags::empty(), 0); Self::DEFAULT_EVENT_CAPACITY];
+        let copy_len = num_events.min(Self::DEFAULT_EVENT_CAPACITY);
+        ready_events[..copy_len].copy_from_slice(&self.events_buffer[..copy_len]);
+        for &event in &ready_events[..copy_len] {
+            handler.on_event(self, event.token(), event.flags())?;
         }
 
         Ok(num_events)
@@ -289,12 +300,17 @@ mod tests {
     }
 
     impl Handler for MockHandler {
-        fn on_event(&mut self, token: Token, flags: EpollFlags) -> io::Result<()> {
+        fn on_event(
+            &mut self,
+            _event_loop: &mut EventLoop,
+            token: Token,
+            flags: EpollFlags,
+        ) -> io::Result<()> {
             self.events.push((token, flags));
             Ok(())
         }
 
-        fn on_timeout(&mut self, timer_id: TimerId) -> io::Result<()> {
+        fn on_timeout(&mut self, _event_loop: &mut EventLoop, timer_id: TimerId) -> io::Result<()> {
             self.timeouts.push(timer_id);
             Ok(())
         }

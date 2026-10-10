@@ -525,6 +525,23 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - **Graceful Shutdown & Drain Mode**: Implemented `initiate_graceful_shutdown()` on the server, paired with `EventLoop::drain_once()`. When a shutdown signal (`SIGINT`, `SIGTERM`) arrives, the server deregisters the listening socket from epoll, pauses client read interest (`READABLE` dropped), and enters a drain loop flushing pending write queues up to a configurable deadline (`shutdown_timeout`, default 5s). Lingering connections exceeding the deadline are forcefully terminated via `force_close_all()`.
   - **Verification**: Verified with unit tests covering capacity queries, dynamic limit expansion, idle sweeps, and closing-state purges in `src/net/connection.rs`, as well as integration tests validating connection rejection, shutdown drain behavior, and clean teardown in `tests/integration.rs`.
 
+---
+
+## 2026-10-10: Bugfix — Event Loop Handler Dispatch & Socket RST on Linux
+
+- **Date**: 2026-10-10
+- **Summary**: Resolved `ConnectionReset` (OS error 104) failures occurring in Linux CI runs within non-blocking echo server integration tests.
+- **Root Cause Analysis**:
+  - Previously, `NonBlockingEchoServer` attempted to hold the `EventLoop` as a struct field while simultaneously implementing `Handler for NonBlockingEchoServer`. To bypass Rust's borrow checker when calling `self.event_loop.run(self)`, `run()` and `run_ticks()` swapped `self.event_loop` with a dummy `EventLoop::new()`.
+  - Consequently, callbacks (`handle_accept`, `handle_client_read`, `handle_client_write`, `on_timeout`) called methods on the dummy `self.event_loop` rather than the active running event loop instance.
+  - On Linux, newly accepted client sockets were never registered with the actual kernel epoll instance. The server thread never received read events for client messages and exited upon exhausting tick counts. Dropping the server closed client sockets while unread data remained in the socket receive buffer, causing the Linux TCP stack to immediately emit TCP `RST` packets (`ECONNRESET`).
+- **Architectural Solution**:
+  - **First-Class EventLoop Parameter on Handler**: Updated `Handler::on_event(&mut self, event_loop: &mut EventLoop, token: Token, flags: EpollFlags)` and `Handler::on_timeout(&mut self, event_loop: &mut EventLoop, timer_id: TimerId)`.
+  - **Disjoint Struct Fields**: Decomposed `NonBlockingEchoServer` into `EchoServerHandler` (owning `listener`, `connections`, configuration) and `EventLoop`. Method calls like `self.event_loop.run(&mut self.state)` borrow disjoint fields cleanly without `mem::replace` workarounds.
+  - **Zero-Allocation Ready Event Copying**: In `EventLoop::run_once_internal`, ready events and expired timers are extracted before dispatching callbacks, allowing `&mut self` to be passed directly to the handler while preserving zero-allocation performance.
+- **Verification**: Verified clean compilation with `cargo check --target x86_64-unknown-linux-gnu`, `cargo clippy --target x86_64-unknown-linux-gnu --all-targets --all-features -- -D warnings`, `cargo fmt --check`, and 100% test pass rate across all suites.
+
+
 
 
 
