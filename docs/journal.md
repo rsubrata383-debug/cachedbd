@@ -317,3 +317,55 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - **Choice**: Lowercase keyword string arguments (`"nx"`, `"xx"`).
 - **Reason**: Clean readability and straightforward extensibility for upcoming options (e.g. expiry TTL).
 - **What would make us revisit it**: If option parsing in the command dispatcher is measured to be a bottleneck.
+
+---
+
+## 2026-10-10: Phase 0 Week 2 - Threading Model and Architecture Decisions
+
+### Decision 27: Handling `unsafe` and OS Syscalls for the `epoll` Event Loop
+
+- **Date**: 2026-10-10
+- **Options**:
+  - Option A: Use `libc` directly with narrowly scoped `unsafe` in `src/net/sys.rs` (safe API to rest of crate).
+  - Option B: Use a safe wrapper crate like `mio`, keeping `unsafe_code = "forbid"`.
+  - Option C: Use standard library `std::net` non-blocking sockets with polling in pure safe Rust.
+- **Choice**: Option A with encapsulation in `src/net/sys.rs`.
+- **Implementation Rules**:
+  - Put all `unsafe` code in one small module, `src/net/sys.rs`, exposing a 100% safe API to the rest of the code.
+  - Keep `src/net/event_loop.rs` completely free of `unsafe` code.
+  - Use the `libc` crate, only on Linux (`#[cfg(target_os = "linux")]`).
+  - Do not add `libc` or change `Cargo.toml` now; keep `unsafe_code = "forbid"` until Phase 1 Week 3.
+  - **Phase 1 Week 3 To-Do**: Change `unsafe_code` lint in `Cargo.toml` from `"forbid"` to `"deny"`, and allow `unsafe` only in `net/sys.rs`.
+  - Every `unsafe` block must have a `// SAFETY:` comment explaining why it is sound.
+- **Reason**: Keeps `unsafe` strictly isolated to a single dedicated system-call wrapper module while building our own event loop from scratch per the roadmap; the rest of the codebase (including `event_loop.rs`) remains 100% safe Rust.
+- **What would make us revisit it**: If maintaining custom `sys.rs` bindings across multiple OS kernels becomes excessive and warrants adopting an external abstraction crate like `mio`.
+
+---
+
+### Decision 28: v0.1 Server Threading Model
+
+- **Date**: 2026-10-10
+- **Options**:
+  - Option A: Pure single thread for everything in v0.1 (event loop, network parsing, command execution, expiry).
+  - Option B: Main thread + dedicated network I/O helper thread from day 1.
+- **Choice**: Option A (one thread for everything in v0.1).
+- **Reason**: Guarantees atomicity by construction without locks, avoids race conditions, simplifies debugging and testing, and provides optimal cache locality for key/value operations.
+- **Rules for Later Phases**:
+  - Phase 2, Week 15: Add background helper thread for lazy freeing of oversized keys/collections to avoid latency spikes.
+  - Phase 4 (Weeks 27-32): Add background helper threads for snapshots (`.cdbs`) and journal `fsync`.
+  - Helper threads communicate with the main thread strictly via message-passing channels, never shared locks on the keyspace.
+- **What would make us revisit it**: If single-threaded execution cannot meet latency requirements for mixed workloads, or if large operations block the loop before Phase 2 Week 15.
+
+---
+
+### Decision 29: Event Loop Implementation: Custom vs Async Runtime (`tokio`)
+
+- **Date**: 2026-10-10
+- **Options**:
+  - Option A: Custom hand-written event loop on Linux `epoll`.
+  - Option B: Third-party async runtime (`tokio`).
+- **Choice**: Option A (custom hand-written event loop on Linux `epoll`, no `tokio`).
+- **Reason**: Gives exact control over memory allocations and network buffers, predictable sub-millisecond p99 latency without opaque thread-pool scheduling, and follows the project's educational guiding principle to understand systems programming from scratch.
+- **What would make us revisit it**: If the custom event loop proves fragile under soak testing or cannot maintain 10,000 connections compared to a standard runtime.
+
+
