@@ -1,8 +1,10 @@
-# Cachedb Command Language Specification (Phase 1 / v0.1 draft)
+# Cachedb Command Language Specification (v0.1)
 
 This document defines the core command language and dispatching rules for Cachedb v0.1.
 
-> **Status:** v0.1 draft (will be frozen alongside all core specs at the end of Week 2).
+> **Version:** 0.1 (Frozen)  
+> **Status:** Frozen on 2026-10-10 (Phase 0 Week 2)  
+> **Change Policy:** Frozen specifications cannot be modified without a formal decision entry in `docs/journal.md`, documented rationale, and a version increment (e.g. v0.1.1 or v0.2).
 
 ---
 

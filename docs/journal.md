@@ -368,4 +368,33 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - **Reason**: Gives exact control over memory allocations and network buffers, predictable sub-millisecond p99 latency without opaque thread-pool scheduling, and follows the project's educational guiding principle to understand systems programming from scratch.
 - **What would make us revisit it**: If the custom event loop proves fragile under soak testing or cannot maintain 10,000 connections compared to a standard runtime.
 
+---
+
+## 2026-10-10: Phase 0 Milestone — Core Specifications v0.1 Frozen
+
+### Milestone: Phase 0 Exit — Spec v0.1 Frozen
+
+- **Date**: 2026-10-10
+- **Summary**: Comprehensive cross-document consistency audit completed across all specification and design documents. All 29 architectural decisions have been resolved and closed. Specifications `protocol.md`, `values.md`, `errors.md`, and `commands.md` are officially frozen at version 0.1.
+- **Documents Frozen**:
+  - [docs/spec/protocol.md](file:///c:/Users/Subrata/Desktop/rust/cachedb/docs/spec/protocol.md) (v0.1): 14-byte header, big-endian, pure binary, 8 verified hex examples, `FLAG_MORE_FRAMES` reserved.
+  - [docs/spec/values.md](file:///c:/Users/Subrata/Desktop/rust/cachedb/docs/spec/values.md) (v0.1): Binary keys, 1 KB key limit, 32 MB default value limit, no empty keys, primitive and rich data type catalog.
+  - [docs/spec/errors.md](file:///c:/Users/Subrata/Desktop/rust/cachedb/docs/spec/errors.md) (v0.1): 33 unique codes across semantic 1000s ranges with connection drop semantics.
+  - [docs/spec/commands.md](file:///c:/Users/Subrata/Desktop/rust/cachedb/docs/spec/commands.md) (v0.1): Strict lowercase commands, 9 Phase 1 operations (`hello`, `ping`, `put`, `fetch`, `drop`, `has`, `size`, `bump`, `quit`).
+  - [docs/design/threading.md](file:///c:/Users/Subrata/Desktop/rust/cachedb/docs/design/threading.md): Single-threaded core, helper threads via channels, `Clock`/`AsyncStream`/`Disk` test traits, isolated unsafe in `src/net/sys.rs`.
+- **Errata and Fixes Applied During Review**:
+  - Updated `docs/spec/protocol.md` overview to explicitly note that `FLAG_MORE_FRAMES` is reserved in v0.1.
+  - Added formal version and status header blocks across all four specification files.
+- **Policy for Modifying Frozen Specs**:
+  Any future modification to a frozen specification MUST follow this procedure:
+  1. Record a formal decision entry in `docs/journal.md` documenting context, options, choice, reason, and revisit criteria.
+  2. Obtain explicit approval from the project owner before making modifications.
+  3. Increment the spec document version line (e.g. `v0.1.1` for errata/clarifications, `v0.2` for breaking or additive feature changes).
+  4. Verify all modified hex examples against an automated validation script.
+- **Phase 0 Exit Status**:
+  - All Phase 0 items in `cachedb-roadmap.md` are completed (compiler sanitizers explicitly deferred to Linux pre-Week 5 per Decision 6).
+  - All four cargo checks pass with 0 warnings; all 8 protocol hex examples pass validation.
+  - Ready to proceed to Phase 1 (Week 3: Event Loop on Linux `epoll`).
+
+
 

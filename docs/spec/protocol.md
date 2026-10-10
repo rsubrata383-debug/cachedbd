@@ -1,8 +1,10 @@
-# Cachedb Wire Protocol Specification (v0.1 draft)
+# Cachedb Wire Protocol Specification (v0.1)
 
 This document defines the binary wire protocol used for communication between Cachedb clients and the `cachedbd` server.
 
-> **Status:** v0.1 draft (will be frozen alongside all core specs at the end of Week 2).
+> **Version:** 0.1 (Frozen)  
+> **Status:** Frozen on 2026-10-10 (Phase 0 Week 2)  
+> **Change Policy:** Frozen specifications cannot be modified without a formal decision entry in `docs/journal.md`, documented rationale, and a version increment (e.g. v0.1.1 or v0.2).
 
 ---
 
@@ -16,7 +18,8 @@ Key design attributes:
 - **Framing**: Fixed 14-byte header containing a 4-byte (`u32`) payload length prefix.
 - **Multiplexed Pipelining**: 32-bit `request_id` pairs asynchronous requests and responses.
 - **Push Notifications**: Unsolicited messages (pub/sub, replication) use `FLAG_PUSH` and `request_id = 0`.
-- **Streaming Chunks**: Large messages can be split across multiple frames using `FLAG_MORE_FRAMES`.
+- **Streaming Chunks (Reserved in v0.1)**: `FLAG_MORE_FRAMES` is reserved in v0.1; chunking design is deferred to Phase 2, Week 15.
+
 
 ---
 
