@@ -27,7 +27,6 @@ cachedb/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── README.md
-├── cachedb.md
 ├── AGENTS.md
 ├── docs/
 │   ├── spec/

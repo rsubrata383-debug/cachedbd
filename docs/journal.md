@@ -396,5 +396,18 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - All four cargo checks pass with 0 warnings; all 8 protocol hex examples pass validation.
   - Ready to proceed to Phase 1 (Week 3: Event Loop on Linux `epoll`).
 
+---
+
+## 2026-10-10: Repo Cleanup After Phase 0 Review
+
+- **Date**: 2026-10-10
+- **Summary**: Minor repository hygiene cleanup following the completion of Phase 0.
+- **Changes**:
+  - Renamed `README.MD` to `README.md` using two-step `git mv` for case-sensitive git tracking.
+  - Wrote concise `README.md` in simple English with project overview, status ("Phase 0 done, specs v0.1 frozen. Phase 1 not started"), build/check commands, binary names, default port (`7379`), primary OS (Linux / WSL2), and doc links. Removed stray `manifest.html` link.
+  - Removed non-existent `cachedb.md` entry from the repository layout tree in `cachedb-roadmap.md`.
+  - Verified no dangling links to `README.MD` or `cachedb.md` exist in the repository.
+
+
 
 
