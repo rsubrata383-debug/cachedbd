@@ -60,7 +60,7 @@ The `flags` byte controls message routing and framing behavior:
 | Bit 0 | `0x01` | `FLAG_RESPONSE` | `0` = Request from client; `1` = Response from server. |
 | Bit 1 | `0x02` | `FLAG_ERROR` | `1` = Payload contains a structured error response. |
 | Bit 2 | `0x04` | `FLAG_PUSH` | `1` = Unsolicited server push message. `request_id` must be `0`. |
-| Bit 3 | `0x08` | `FLAG_MORE_FRAMES` | `1` = Chunked frame; additional frames follow for the same `request_id`. |
+| Bit 3 | `0x08` | `FLAG_MORE_FRAMES` | Reserved in v0.1. Clients and servers MUST NOT set this bit in v0.1. |
 | Bits 4-7 | `0xF0` | Reserved | Must be set to `0`. Reserved for future protocol revisions. |
 
 ---
@@ -137,12 +137,13 @@ When an operation fails:
 
 ---
 
-## 8. Split Frames and Large Payloads
+## 8. Multi-Frame Chunking (Reserved in v0.1)
 
-For streaming or payloads split across frames:
-- Sender sets `FLAG_MORE_FRAMES` (`0x08`) on all chunks except the last.
-- All chunks share the same `request_id`.
-- Receiver buffers and concatenates payload chunks until a frame with `FLAG_MORE_FRAMES = 0` arrives.
+In v0.1, application-level multi-frame chunking is **reserved**:
+- Clients and servers **MUST NOT** set the `FLAG_MORE_FRAMES` (`0x08`) flag in v0.1.
+- If a receiver sees a frame with `FLAG_MORE_FRAMES` (`0x08`) set, it MUST send a protocol error (`code = 1002`, `ERR_UNSUPPORTED_FLAG`, message `"unsupported flag"`) and immediately close the connection.
+- **Push messages (`request_id = 0`) will never be chunked.**
+- Detailed rules for interleaving chunks across different request IDs and chunk reassembly will be formally specified in **Phase 2, Week 15**, guided by real latency measurements.
 
 ---
 
@@ -157,7 +158,7 @@ To prevent denial-of-service and buffer exhaustion:
 | **Max Key Size** | 64 KB (65,536 bytes) | Yes (`max_key_size`) | Error reply returned |
 | **Max Value Size** | 32 MB (default) | Yes (`max_value_size`) | Error reply returned |
 
-> **Note on Large Values**: The default `max_frame_size` is 64 MB. For workloads requiring up to 100 MB values (such as Phase 2 Week 15 benchmarks), operators can raise `max_frame_size = 134217728` (128 MB) in `cachedb.toml`, or transmit values across multiple chunk frames using `FLAG_MORE_FRAMES`.
+> **Note on Large Values**: In v0.1, large values up to 100 MB (tested in Phase 2 Week 15 benchmarks) are supported by raising `max_frame_size = 134217728` (128 MB) in `cachedb.toml`. Multi-frame chunking remains reserved.
 
 ---
 
@@ -337,3 +338,37 @@ CA DB 01 01 00 00 00 01 00 02 00 00 00 06 04 04 70 6F 6E 67
 ```
 
 > **Parser Rule:** Because the buffer contains only 5 bytes (less than the required 14-byte header), the parser cannot determine the full frame size yet. It retains the 5 bytes in the connection buffer without error and yields control until the socket is readable again.
+
+---
+
+### Example 8: Unsupported Reserved Flag and Server Error Reply
+Client sends a request frame with reserved bit 3 (`0x08`) set; server responds with error `1002` (`ERR_UNSUPPORTED_FLAG`) and closes the connection:
+
+```text
+-- Client Request Frame (Reserved bit 3 set: flags = 0x08):
+CA DB             -- Magic: "CADB" (2 bytes)
+01                -- Version: 1 (1 byte)
+08                -- Flags: 0x08 (Reserved bit set, 1 byte)
+00 00 00 05       -- Request ID: 5 (4 bytes, Big-Endian)
+00 02             -- Opcode: 0x0002 (COMMAND, 2 bytes)
+00 00 00 08       -- Payload length: 8 bytes (4 bytes)
+-- Header total: 14 bytes
+06 01 04 04 70 69 6E 67 -- Payload: Array[Text("ping")] (8 bytes)
+
+-- Server Error Response (flags = 0x03, payload_len = 20):
+CA DB             -- Magic: "CADB" (2 bytes)
+01                -- Version: 1 (1 byte)
+03                -- Flags: 0x03 (FLAG_RESPONSE | FLAG_ERROR, 1 byte)
+00 00 00 05       -- Request ID: 5 (4 bytes, Big-Endian)
+00 02             -- Opcode: 0x0002 (COMMAND, 2 bytes)
+00 00 00 14       -- Payload length: 20 bytes (4 bytes, 0x14 = 20)
+-- Header total: 14 bytes
+
+08                -- Type: Error (1 byte)
+EA 07             -- Error Code: 1002 (2 bytes, LEB128 varint)
+10                -- Message length: 16 bytes (1 byte)
+75 6E 73 75 70 70 6F 72 -- UTF-8: "unsuppor" (8 bytes)
+74 65 64 20 66 6C 61 67 -- UTF-8: "ted flag" (8 bytes)
+-- Payload total: 1 + 2 + 1 + 16 = 20 bytes
+```
+

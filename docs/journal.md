@@ -185,3 +185,20 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - **Fix**: Replaced Example 6 with a real `PING` request frame arriving across two TCP reads cut mid-payload. Added Example 7 with a `PONG` response frame cut mid-header after 5 bytes. Both represent realistic non-blocking TCP socket reads where the parser must buffer partial data without error.
 - **Key Lesson**: *"Hex examples must be checked by a script."* Manually written hex dumps are error-prone; running automated decoders against example bytes ensures the spec is 100% executable and correct.
 - **Open Questions Recorded**: Multi-frame application-level chunking (`FLAG_MORE_FRAMES`) details are kept under question for the owner (interleaving rules, timeout policies, push applicability).
+
+---
+
+### Decision 17: Reservation of Multi-Frame Flag (`FLAG_MORE_FRAMES`) in Protocol v0.1
+
+- **Date**: 2026-10-10
+- **Options**:
+  - Implement full application-level chunking with `FLAG_MORE_FRAMES` (`0x08`) in v0.1.
+  - Mark `FLAG_MORE_FRAMES` (`0x08`) as reserved in v0.1; reject frames setting it with error `1002` (`ERR_UNSUPPORTED_FLAG`) and drop connection.
+- **Choice**: Reserve `FLAG_MORE_FRAMES` (`0x08`) in v0.1.
+- **Rules Established**:
+  - Clients and servers MUST NOT set this bit in v0.1.
+  - Receivers must reply with error `1002` (`ERR_UNSUPPORTED_FLAG`, `"unsupported flag"`) and close the connection if encountered.
+  - Push messages (`request_id = 0`) will never be chunked.
+  - Chunk interleaving and reassembly rules are deferred to Phase 2, Week 15.
+- **Reason**: Simplifies the initial network parser and prevents complex connection-level reassembly buffer state machines. Configurable `max_frame_size` (default 64 MB, up to 128 MB+) covers large payloads in v0.1.
+- **What would make us revisit it**: 100 MB value tests in Phase 2, Week 15 with latency measurements. If allocating contiguous buffers causes latency spikes or memory fragmentation, multi-frame chunking will be implemented then.
