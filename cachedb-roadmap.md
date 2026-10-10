@@ -114,21 +114,21 @@ cachedb/
 
 ### Week 1: Choices and setup
 
-- [ ] Choose the implementation language (Rust) and write down why.
-- [ ] Set up the repo, build system, formatter, linter, and a CI pipeline (build + tests on every push).
-- [ ] Set up sanitizers (address, undefined behavior, thread) or the equivalent for your language.
-- [ ] Create the `docs/journal.md` and `docs/spec/` folders.
-- [ ] Write the project vision: target workloads (cache, session store, queue, leaderboard), non-goals, and performance targets (for example 200k ops/sec on one core, p99 latency under 1 ms).
-- [ ] Decide naming: project, binary names (`cachedbd` server, `cachedb-cli` client), file extensions, and default port.
+- [x] Choose the implementation language (Rust) and write down why.
+- [x] Set up the repo, build system, formatter, linter, and a CI pipeline (build + tests on every push).
+- [x] Set up sanitizers (address, undefined behavior, thread) or the equivalent for your language.
+- [x] Create the `docs/journal.md` and `docs/spec/` folders.
+- [x] Write the project vision: target workloads (cache, session store, queue, leaderboard), non-goals, and performance targets (for example 200k ops/sec on one core, p99 latency under 1 ms).
+- [x] Decide naming: project, binary names (`cachedbd` server, `cachedb-cli` client), file extensions, and default port.
 
 ### Week 2: Core specs
 
-- [ ] Draft the **wire protocol spec** (see Appendix A for a starting sketch).
-- [ ] Draft the **command language spec** (see Appendix B).
-- [ ] Draft the **value model**: which types exist, their limits (max key size, max value size), and how errors are reported.
-- [ ] Write the **threading model** decision (single-threaded core plus optional helper threads for I/O and background work).
-- [ ] Define the error code catalog (numbers plus messages).
-- [ ] Review everything once, fix contradictions, and freeze `spec v0.1`.
+- [x] Draft the **wire protocol spec** (see Appendix A for a starting sketch).
+- [x] Draft the **command language spec** (see Appendix B).
+- [x] Draft the **value model**: which types exist, their limits (max key size, max value size), and how errors are reported.
+- [x] Write the **threading model** decision (single-threaded core plus optional helper threads for I/O and background work).
+- [x] Define the error code catalog (numbers plus messages).
+- [x] Review everything once, fix contradictions, and freeze `spec v0.1`.
 
 **Exit criteria:** specs reviewed; CI green; you can explain the whole architecture in 10 minutes without notes.
 
