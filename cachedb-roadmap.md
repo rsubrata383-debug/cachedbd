@@ -140,18 +140,18 @@ cachedb/
 
 ### Week 3: Networking basics
 
-- [ ] Write a blocking TCP echo server to learn the socket API.
-- [ ] Rewrite it as a non-blocking server using `epoll` (Linux) / `kqueue` (BSD/macOS) / IOCP (Windows). Pick the primary OS and abstract the rest.
-- [ ] Implement an event loop abstraction: register fd, readable/writable callbacks, timers.
-- [ ] Handle partial reads/writes, `EAGAIN`, connection close, and signals.
+- [x] Write a blocking TCP echo server to learn the socket API.
+- [x] Rewrite it as a non-blocking server using `epoll` (Linux) / `kqueue` (BSD/macOS) / IOCP (Windows). Pick the primary OS and abstract the rest.
+- [x] Implement an event loop abstraction: register fd, readable/writable callbacks, timers.
+- [x] Handle partial reads/writes, `EAGAIN`, connection close, and signals.
 
 ### Week 4: Buffers and connections
 
-- [ ] Implement a connection object with a read buffer and a write queue.
-- [ ] Implement a growable ring buffer or chunked buffer with zero-copy where practical.
-- [ ] Add backpressure: stop reading from a client whose output queue is too large.
-- [ ] Add connection limits, idle timeouts, and graceful shutdown.
-- [ ] Test with 10,000 idle connections.
+- [x] Implement a connection object with a read buffer and a write queue.
+- [x] Implement a growable ring buffer or chunked buffer with zero-copy where practical.
+- [x] Add backpressure: stop reading from a client whose output queue is too large.
+- [x] Add connection limits, idle timeouts, and graceful shutdown.
+- [x] Test with 10,000 idle connections.
 
 ### Week 5: Wire protocol
 

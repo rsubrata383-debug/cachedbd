@@ -541,6 +541,30 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - **Zero-Allocation Ready Event Copying**: In `EventLoop::run_once_internal`, ready events and expired timers are extracted before dispatching callbacks, allowing `&mut self` to be passed directly to the handler while preserving zero-allocation performance.
 - **Verification**: Verified clean compilation with `cargo check --target x86_64-unknown-linux-gnu`, `cargo clippy --target x86_64-unknown-linux-gnu --all-targets --all-features -- -D warnings`, `cargo fmt --check`, and 100% test pass rate across all suites.
 
+---
+
+## 2026-10-10: Phase 1 Week 4 Step 5 — Test with 10,000 Idle Connections
+
+- **Date**: 2026-10-10
+- **Summary**: Implemented scale and soak tests for 10,000 concurrent idle connections in `tests/soak.rs`, validating memory footprint, capacity enforcement, fast $\mathcal{O}(1)$ token lookup, and deterministic idle sweep performance.
+- **Architectural Findings & Measurements**:
+  - **Memory Footprint**:
+    - Each idle connection initial allocation consists of an empty `WriteQueue` (0 heap bytes) and an initial 4,096-byte `ReadBuffer`.
+    - Across 10,000 idle sessions, total allocated buffer memory is exactly $10{,}000 \times 4{,}096 = 40{,}960{,}000$ bytes ($\approx 40.96\text{ MB}$).
+    - Average buffer memory per idle session is $\approx 4.09\text{ KB}$, well within the target budget of $\le 16\text{ KB}$ per idle connection.
+  - **Limit Enforcement**:
+    - `ConnectionTable` enforced the exact ceiling at 10,000 connections (`is_at_capacity() == true`, `remaining_capacity() == 0`).
+    - Attempting to insert an overflow connection (10,001) returns `io::ErrorKind::ConnectionRefused` cleanly without table mutation.
+  - **$\mathcal{O}(1)$ Lookup & Touch**:
+    - Sampled lookups and touches across 10,000 tokens completed in $< 1\text{ ms}$.
+  - **Deterministic Idle Sweeper Performance**:
+    - Sweeping all 10,000 connections to detect idle tokens completed in $< 5\text{ ms}$ on a single core.
+    - Verified exact partitioning: with 5,000 simulated idle connections, `idle_tokens()` precisely identified 5,000 tokens, and `sweep_idle_connections()` purged them, returning table length to 5,000 and remaining capacity to 5,000.
+  - **OS Descriptor Real Socket Verification**:
+    - Added real non-blocking loopback socket test verifying capacity and rejection limits with operating system descriptors.
+    - Added an opt-in 10,000 real TCP connection test (`#[ignore = "requires elevated ulimit -n (>= 25,000 open file descriptors)"]`) runnable on environments with configured descriptor limits.
+
+
 
 
 

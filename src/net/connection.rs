@@ -197,6 +197,11 @@ impl<S> Connection<S> {
         self.last_active = Instant::now();
     }
 
+    /// Sets the timestamp of the last activity on the connection.
+    pub fn set_last_active(&mut self, instant: Instant) {
+        self.last_active = instant;
+    }
+
     /// Initiates connection closing.
     ///
     /// If there are pending outgoing writes, `is_closing` is set to `true` and the connection
@@ -233,6 +238,12 @@ impl<S> Connection<S> {
         }
 
         flags
+    }
+
+    /// Returns the total buffer memory in bytes allocated for this connection's read buffer and write queue.
+    #[must_use]
+    pub fn allocated_buffer_memory(&self) -> usize {
+        self.read_buf.capacity() + self.write_queue.len()
     }
 }
 
@@ -514,6 +525,24 @@ impl<S> ConnectionTable<S> {
     /// Returns a mutable iterator over all active connection pairs `(&Token, &mut Connection<S>)`.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&Token, &mut Connection<S>)> {
         self.connections.iter_mut()
+    }
+
+    /// Returns the total read buffer capacity in bytes allocated across all active connections.
+    #[must_use]
+    pub fn total_read_buffer_capacity(&self) -> usize {
+        self.connections
+            .values()
+            .map(|conn| conn.read_buffer().capacity())
+            .sum()
+    }
+
+    /// Returns the total allocated buffer memory in bytes across all connections in the table.
+    #[must_use]
+    pub fn total_allocated_buffer_memory(&self) -> usize {
+        self.connections
+            .values()
+            .map(Connection::allocated_buffer_memory)
+            .sum()
     }
 }
 
