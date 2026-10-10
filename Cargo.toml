@@ -1,0 +1,14 @@
+[package]
+name = "cachedb"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "cachedbd"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
