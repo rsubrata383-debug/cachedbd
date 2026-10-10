@@ -202,3 +202,55 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - Chunk interleaving and reassembly rules are deferred to Phase 2, Week 15.
 - **Reason**: Simplifies the initial network parser and prevents complex connection-level reassembly buffer state machines. Configurable `max_frame_size` (default 64 MB, up to 128 MB+) covers large payloads in v0.1.
 - **What would make us revisit it**: 100 MB value tests in Phase 2, Week 15 with latency measurements. If allocating contiguous buffers causes latency spikes or memory fragmentation, multi-frame chunking will be implemented then.
+
+---
+
+## 2026-10-10: Phase 0 Week 2 - Value Model and Error Catalog Decisions
+
+### Decision 18: Key Representation (Binary vs UTF-8 Text)
+
+- **Date**: 2026-10-10
+- **Options**:
+  - Arbitrary Binary (`Bytes`): Keys can contain any bytes `0x00`-`0xFF` up to key limit.
+  - UTF-8 Text Only (`Text`): Keys must be valid UTF-8 strings.
+- **Choice**: Arbitrary Binary (`Bytes`).
+- **Rule**: Shell client (`cachedb-cli`) must display non-printable or unusual bytes in a safe escaped form.
+- **Reason**: Maximum flexibility for applications storing binary UUIDs or hashed keys; zero UTF-8 validation overhead on the engine lookup hot path.
+- **What would make us revisit it**: If text-only debugging across third-party tools requires strictly rejecting non-UTF-8 bytes.
+
+---
+
+### Decision 19: Empty Key Allowance
+
+- **Date**: 2026-10-10
+- **Options**:
+  - Disallow empty keys (length $\ge 1$, error `2006` `ERR_EMPTY_KEY` on 0-byte key).
+  - Allow empty keys (length 0 valid).
+- **Choice**: Disallow empty keys (minimum 1 byte, error `2006`).
+- **Reason**: Prevents common user application bugs where unset string variables (`key = ""`) silently overwrite the same empty-string database entry.
+- **What would make us revisit it**: If compliance with an external standard or testing framework requires supporting 0-byte keys.
+
+---
+
+### Decision 20: Error Code Organization (Grouped Ranges vs Flat)
+
+- **Date**: 2026-10-10
+- **Options**:
+  - Grouped Ranges by Subsystem (1000s = Protocol, 2000s = Command, 3000s = Types, 4000s = Storage, 5000s = Auth, 6000s = Replication, 7000s = Server).
+  - Flat sequential numbering (1, 2, 3...).
+- **Choice**: Grouped ranges with gaps.
+- **Reason**: Allows client libraries to inspect error ranges (e.g. `1000..=1999` means disconnect immediately) and leaves ample gaps for future feature additions.
+- **What would make us revisit it**: If compact single-byte status codes are prioritized over extensible numeric catalogs.
+
+---
+
+### Decision 21: Default Max Key Size Limit (1 KB Default, Configurable)
+
+- **Date**: 2026-10-10
+- **Options**:
+  - 64 KB: Permissive limit, but allows massive keys that cause memory bloat and hash bucket inefficiency.
+  - 1 KB (1,024 bytes): Default limit, plenty of space for real-world hierarchical keys (e.g. `tenant:user:session:uuid`) while keeping index overhead bounded. Configurable via `max_key_size` in `cachedb.toml`.
+  - 256 bytes: Very strict, might reject long URLs or compound keys.
+- **Choice**: 1 KB (1,024 bytes default, configurable).
+- **Reason**: Protects against memory bloat from oversized keys while providing ample room for standard naming conventions. Operators with special requirements can raise `max_key_size` in `cachedb.toml`.
+- **What would make us revisit it**: If major target workloads require embedding large serialized payloads or multi-field tokens directly within key strings.

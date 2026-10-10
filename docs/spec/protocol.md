@@ -155,7 +155,7 @@ To prevent denial-of-service and buffer exhaustion:
 |---|---|---|---|
 | **Max Frame Size** | 64 MB (67,108,864 bytes) | Yes (`max_frame_size` in `cachedb.toml`) | Connection closed immediately |
 | **Max Argument Count** | 65,536 items | Yes (`max_arguments`) | Error reply returned |
-| **Max Key Size** | 64 KB (65,536 bytes) | Yes (`max_key_size`) | Error reply returned |
+| **Max Key Size** | 1 KB (1,024 bytes default) | Yes (`max_key_size` in `cachedb.toml`) | Error reply returned |
 | **Max Value Size** | 32 MB (default) | Yes (`max_value_size`) | Error reply returned |
 
 > **Note on Large Values**: In v0.1, large values up to 100 MB (tested in Phase 2 Week 15 benchmarks) are supported by raising `max_frame_size = 134217728` (128 MB) in `cachedb.toml`. Multi-frame chunking remains reserved.
