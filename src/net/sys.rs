@@ -230,8 +230,8 @@ impl Epoll {
         }
 
         let num_ready = count as usize;
-        for i in 0..num_ready {
-            events[i] = Self::from_raw_event(&self.raw_events[i]);
+        for (event_slot, raw_event) in events.iter_mut().zip(&self.raw_events).take(num_ready) {
+            *event_slot = Self::from_raw_event(raw_event);
         }
 
         Ok(num_ready)
@@ -440,17 +440,12 @@ pub fn set_linger_zero(fd: RawFd) -> io::Result<()> {
         l_onoff: 1,
         l_linger: 0,
     };
-    // SAFETY: `fd` is a valid raw descriptor. `&linger` points to a valid `libc::linger` struct
+    let optlen = libc::socklen_t::try_from(std::mem::size_of::<libc::linger>()).unwrap_or(4);
+    let optval = std::ptr::from_ref(&linger).cast::<libc::c_void>();
+
+    // SAFETY: `fd` is a valid raw descriptor. `optval` points to a valid `libc::linger` struct
     // with size matching `sizeof(libc::linger)`.
-    let res = unsafe {
-        libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_LINGER,
-            &linger as *const _ as *const libc::c_void,
-            std::mem::size_of::<libc::linger>() as libc::socklen_t,
-        )
-    };
+    let res = unsafe { libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_LINGER, optval, optlen) };
     if res < 0 {
         return Err(io::Error::last_os_error());
     }
