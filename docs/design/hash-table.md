@@ -89,12 +89,12 @@ The implementation enforces and validates core invariants (`check_invariants()`)
 ### 8.1 Why Incremental Resizing?
 In an in-memory database targeting a strict $< 1\text{ ms}$ p99 latency SLA and 200k ops/sec throughput, stop-the-world reallocation is unacceptable. Reallocating and copying a hash table with 10M keys can pause execution for 50–200 ms. Incremental resizing spreads key copying work over mutating operations, bounding latency.
 
-However, while key migration is spread out incrementally across mutating operations (16 buckets at a time), allocating and zero-initializing the new backing table is $O(\text{new capacity})$ at the moment a resize is initiated. Empirical measurements for `RobinHoodTable::new` creation latency:
-- **$2^{20}$ slots (~42 MB)**: `14.22 ms`
-- **$2^{22}$ slots (~168 MB)**: `71.11 ms`
-- **$2^{24}$ slots (~671 MB)**: `340.56 ms`
+However, while key migration is spread out incrementally across mutating operations (16 buckets at a time), allocating and zero-initializing the new backing table is $O(\text{new capacity})$ at the moment a resize is initiated. Empirical measurements for `RobinHoodTable::new` creation latency on Linux CI (`ubuntu-24.04`):
+- **$2^{20}$ slots (~42 MB)**: `1.09 ms` (1M run) / `2.26 ms` (10M run)
+- **$2^{22}$ slots (~168 MB)**: `8.53 ms` (1M run) / `13.13 ms` (10M run)
+- **$2^{24}$ slots (~671 MB)**: `32.79 ms` (1M run) / `59.05 ms` (10M run)
 
-While this allocation cost causes a transient latency spike at power-of-two boundaries ($p99.99$ tail latency), it avoids copying all keys at once, reducing worst-case latency spikes by **6x** compared to standard library rehashing.
+While this allocation cost causes a transient latency spike at power-of-two boundaries ($p99.99$ tail latency), it avoids copying all keys at once, reducing worst-case latency spikes by **23x to 30x** compared to standard library rehashing.
 
 ### 8.2 Dual-Table Structure
 - `main_table: SingleTable<V>`: The primary active table receiving new insertions.
@@ -129,25 +129,36 @@ While this allocation cost causes a transient latency spike at power-of-two boun
 
 ---
 
-## 9. Benchmark Profile and Latency Spikes (Week 6 Step 3b)
+## 9. Benchmark Profile and Latency Spikes (Week 6 Step 3c)
 
-Empirical performance measured across 1,000,000 keys using `cargo bench --bench store_bench -- --keys 1000000` (zero timed allocations, 1 warmup + 3 measured runs):
+Empirical performance measured on Linux CI runners (`ubuntu-24.04`, x86_64) across 1,000,000 and 10,000,000 keys:
 
 ### 9.1 Insert Latency Distribution
-- **Median ($p50$)**: `0.30 µs` (300 ns) vs `0.20 µs` in `std::HashMap`
-- **99th percentile ($p99$)**: `1.50 µs` vs `0.60 µs` in `std::HashMap`
-- **99.9th percentile ($p99.9$)**: `3.10 µs` vs `1.00 µs` in `std::HashMap`
-- **99.99th percentile ($p99.99$)**: `22.10 µs` vs `13.60 µs` in `std::HashMap`
-- **Maximum latency ($max$)**: `24,390.30 µs` (~24.4 ms) vs `147,570.80 µs` (~147.6 ms) in `std::HashMap`
+- **At 1,000,000 keys**:
+  - **Median ($p50$)**: `0.120 µs` (120 ns) vs `0.040 µs` in `std::HashMap`
+  - **99th percentile ($p99$)**: `0.611 µs` vs `0.390 µs` in `std::HashMap`
+  - **99.9th percentile ($p99.9$)**: `1.062 µs` vs `0.541 µs` in `std::HashMap`
+  - **99.99th percentile ($p99.99$)**: `7.321 µs` vs `1.333 µs` in `std::HashMap`
+  - **Maximum latency ($max$)**: `4,460.195 µs` (~4.5 ms) vs `134,747.812 µs` (~134.7 ms) in `std::HashMap` (**30x lower maximum pause**)
+- **At 10,000,000 keys**:
+  - **Median ($p50$)**: `0.210 µs` vs `0.210 µs` in `std::HashMap`
+  - **99th percentile ($p99$)**: `0.931 µs` vs `0.661 µs` in `std::HashMap`
+  - **99.9th percentile ($p99.9$)**: `1.854 µs` vs `0.942 µs` in `std::HashMap`
+  - **99.99th percentile ($p99.99$)**: `11.612 µs` vs `11.050 µs` in `std::HashMap`
+  - **Maximum latency ($max$)**: `50,234.631 µs` (~50.2 ms) vs `1,174,178.501 µs` (~1,174.2 ms) in `std::HashMap` (**23x lower maximum pause**)
 
 ### 9.2 Measured Root Causes of Latency Spikes
-By measuring `capacity()` before and after every slow operation, the top slowest inserts showed:
-1. **Capacity Expansion ($O(\text{new capacity})$ Buffer Allocation)**:
-   - Op #917,504 (`24.39 ms`): capacity changed `1048576 -> 2097152` (~83.9 MB zero-fill allocation).
-   - Op #458,752 (`12.24 ms`): capacity changed `524288 -> 1048576` (~41.9 MB zero-fill allocation).
-   - Op #229,376 (`6.97 ms`): capacity changed `262144 -> 524288` (~21.0 MB zero-fill allocation).
-   - In `std::HashMap`, the equivalent op #917,504 took `147.57 ms` because it had to reallocate *and* synchronously re-hash and copy 917k keys. In `RobinHoodTable`, keys are copied incrementally, resulting in a **6x lower worst-case latency spike**.
-2. **Steady-State Migration Batches**:
-   - In operations where capacity was unchanged (e.g. op #520,192 at `4.43 ms`), latency was bounded by OS virtual memory paging during 16-bucket migration transfers.
-3. **Collision Displacements**:
-   - Max PSL is 9 and average PSL is 0.46 probes per key; steady-state collision displacements remain sub-microsecond ($p99 = 1.50\text{ µs}$).
+By measuring `capacity()` and resizing states before and after every operation, the top slowest inserts showed:
+1. **Resize Started (Buffer Allocation)**:
+   - Op #7,340,032 (`50.23 ms`): capacity changed `8388608 -> 16777216` (~671 MB zero-fill allocation).
+   - Op #3,670,016 (`24.70 ms`): capacity changed `4194304 -> 8388608` (~335 MB zero-fill allocation).
+   - In `std::HashMap`, the equivalent op #7,340,032 took `1,174.18 ms` (1.17 s) because it had to synchronously reallocate, rehash, and copy 7.3M keys. In `RobinHoodTable`, incremental migration avoids stop-the-world copying, reducing pause by **23x**.
+2. **Migration Finished (Old Table Deallocation)**:
+   - Op #8,323,072 (`15.56 ms`): capacity unchanged (`16777216`), tag `migration finished, old table dropped`. When migration completes and `old_table` reaches 0 elements, dropping the old 8M-slot table deallocates ~335 MB of memory.
+   - Op #4,161,536 (`8.58 ms`): dropping the 4M-slot old table (~168 MB) upon migration completion.
+   - Measured drop latency of empty tables on Linux confirms this: $2^{20}$ slots = 1.09 ms, $2^{22}$ slots = 8.53 ms, $2^{24}$ slots = 32.79 ms.
+3. **Steady-State Operations**:
+   - Zero operations during normal incremental migration without allocation or deallocation exceeded 1 ms.
+   - Average PSL remains small (0.46 at 1M keys, 0.74 at 10M keys), ensuring steady-state operations remain sub-microsecond.
+4. **Get-Miss Latency & Tag Arrays**:
+   - Get misses are slower than `std::HashMap` (129.2 ns vs 22.9 ns at 1M, 150.6 ns vs 101.1 ns at 10M). The likely reason is that `std::HashMap` (Swiss Table) checks a compact 1-byte control tag array via SIMD within a single 64-byte cache line fetch, whereas `RobinHoodTable` inspects 40-byte slots across memory. A separate compact hash/tag array is a candidate optimization.

@@ -1267,3 +1267,44 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - Asserted that $\ge 5$ resizes finish (consistently 10 finished) and $\ge 500$ operations run while resizing (consistently 1,100+ operations).
 - Heavy collisions and key shapes tests upgraded to run **10,000+ operations** per seed.
 - Multi-seed driver outputs live stats for all seeds under `--nocapture`, completing all 7 tests in **6.26 seconds** in debug mode.
+
+---
+
+## 2026-10-12: Week 6 Step 3c: Linux CI Benchmarks, Drop Measurements, and PRNG Audit
+
+- **Date**: 2026-10-12
+- **Scope**: Final cleanup of Week 6. Updated benchmarks documentation using official Linux CI runner results (`docs/benchmarks/ci-linux-1M.txt` and `docs/benchmarks/ci-linux-10M.txt`), conducted PRNG audit across repository per Rule 11.1, instrumented slow insert tag tracking and table drop latency, and documented architectural open items.
+
+### 1. Empirical Results from Linux CI (`ubuntu-24.04`)
+- **Main Findings**:
+  - `RobinHoodTable` insert throughput is **1.60x faster** at 1M keys (179.9 ns vs 286.9 ns) and **1.37x faster** at 10M keys (276.5 ns vs 379.4 ns).
+  - Get hits throughput is **1.01x faster** at 1M keys (291.7 ns vs 293.4 ns) and **1.30x faster** at 10M keys (311.4 ns vs 404.4 ns).
+  - Overwrite throughput is **1.08x faster** at 1M keys (157.0 ns vs 169.0 ns) and **1.47x faster** at 10M keys (185.5 ns vs 272.8 ns).
+  - Worst-case latency spike at 10M keys is **50.2 ms** for `RobinHoodTable` vs **1,174.2 ms** (1.17 seconds) for `std::HashMap` (**23x lower pause**).
+  - Get miss throughput is **5.6x slower** at 1M keys (129.2 ns vs 22.9 ns) and **1.5x slower** at 10M keys (150.6 ns vs 101.1 ns).
+  - Mixed workload is 0.96x at 1M keys, but scales to **1.31x faster** at 10M keys (330.8 ns vs 433.4 ns).
+
+### 2. Explanation of Slow Inserts & Drop Measurements
+- **Lifecycle Event Attribution**:
+  - Tracking resizing states before and after each insert revealed that all operations slower than 1 ms fall into two categories:
+    1. `resize started`: Buffer allocation of $2\times$ new capacity (e.g. Op #7,340,032 at 50.2 ms on Linux, Op #917,504 at 37.8 ms on Windows).
+    2. `migration finished, old table dropped`: When migration completes and `old_table` drains to 0 elements, `old_table` is deallocated. Dropping the old table buffer of $C$ slots produces the previously "unexplained" pause (e.g. Op #8,323,072 at 15.6 ms on Linux, Op #520,192 at 4.2 ms on Windows).
+  - Empty table drop latency (`drop(RobinHoodTable)`) was measured directly:
+    - $2^{20}$ slots (~42 MB): 1.09 ms (Linux) / 10.05 ms (Windows)
+    - $2^{22}$ slots (~168 MB): 8.53 ms (Linux) / 33.01 ms (Windows)
+    - $2^{24}$ slots (~671 MB): 32.79 ms (Linux) / 141.24 ms (Windows)
+  - Dropping the multi-megabyte old table buffer upon migration completion accounts fully for the latency spike. Zero operations during steady-state incremental migration (`unchanged`) exceeded 1 ms.
+
+### 3. Open Items for Future Optimizations
+1. **Get-Miss Optimization (Compact Tag Array)**:
+   - `std::collections::HashMap` (Swiss Table) evaluates a compact 1-byte control tag array using SIMD within a single 64-byte cache line fetch. `RobinHoodTable` inspects 40-byte `Slot` structs, requiring multiple DRAM cache line traversals.
+   - *Candidate fix*: Introduce a separate compact 1-byte or 2-byte hash fingerprint array to evaluate lookups and terminate misses within a single cache line before accessing slot contents.
+2. **Resize-Start Pause Mitigation**:
+   - At 10M keys, allocating and zeroing the 16M-slot backing buffer (~671 MB) pauses execution for ~50 ms on Linux (~310 ms on Windows).
+   - *Candidate fixes*:
+     - Allocate the new table backing buffer lazily in chunks/segments upon first probe.
+     - Shard the key space across multiple smaller tables (e.g. 16 or 64 independent tables), keeping per-table allocation pauses under 1 ms.
+     - Offload the deallocation of `old_table` to a background worker thread so the mutating request that finishes migration does not block on `drop()`.
+3. **Random Generator Audit**:
+   - Audited all PRNGs in `src/store/table.rs`, `tests/property.rs`, `benches/store_bench.rs`, and consolidated shared implementation in `tests/common/mod.rs`.
+   - All generators strictly enforce non-zero seed panics and sample bits/ranges using high-order bits (`>> 32`) on wide `u64` integers before casting, conforming to Rule 11.1 in `AGENTS.md`.

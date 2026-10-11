@@ -167,7 +167,7 @@ cachedb/
 - [x] Choose a hash function (implement your own, for example a variant of a well-known non-cryptographic design), and add per-process random seeding.
 - [x] Implement **incremental resizing** (migrate a few buckets per operation) so no operation causes a long pause.
 - [x] Write property tests comparing it to a trivial reference map under random operations.
-- [ ] Benchmark insert/lookup/delete at 1M, 10M keys; record numbers.
+- [x] Benchmark insert/lookup/delete at 1M, 10M keys; record numbers.
 
 ### Week 7: Commands, part 1
 

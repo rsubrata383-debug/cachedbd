@@ -1,0 +1,79 @@
+# Cachedb Store Benchmark: RobinHoodTable vs std::collections::HashMap
+
+- **Configuration**: 1000000 keys, 1000000 mixed operations
+- **OS**: linux
+- **Architecture**: x86_64
+- **Repetitions**: 1 warmup run + 3 measured runs (reporting median [min - max])
+- **Allocation Policy**: Strictly 0 allocations inside timed regions
+
+Pre-generating 1000000 keys and permutation indices (outside timed regions)...
+Datasets ready.
+
+Measuring baseline floor costs (no table operations)...
+Benchmarking RobinHoodTable<u64> across 6 operations (warmup + 3 runs)...
+Benchmarking std::collections::HashMap across 6 operations (warmup + 3 runs)...
+Measuring table allocation resize-start cost...
+
+### Throughput & Performance Comparison (Median of 3 Runs)
+
+| Operation | RobinHoodTable (median) | RobinHoodTable (Mops/s) | std::HashMap (median) | std::HashMap (Mops/s) | Ratio |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| Floor: loop + key access only | 0.4 ns [0.4 - 0.4] | 2534.60 Mops/s | 0.4 ns [0.4 - 0.4] | 2534.60 Mops/s | **1.00x** |
+| Floor: hash only (hash64) | 9.6 ns [9.6 - 9.8] | 104.07 Mops/s | 9.0 ns [9.0 - 9.0] | 110.55 Mops/s | **0.94x** |
+| Insert (N keys from empty) | 179.9 ns [160.1 - 230.3] | 5.56 Mops/s | 286.9 ns [275.3 - 335.5] | 3.49 Mops/s | **1.60x** |
+| Get hits (random order) | 291.7 ns [289.3 - 293.5] | 3.43 Mops/s | 293.4 ns [292.8 - 301.2] | 3.41 Mops/s | **1.01x** |
+| Get misses | 129.2 ns [128.4 - 138.4] | 7.74 Mops/s | 22.9 ns [22.0 - 23.1] | 43.72 Mops/s | **0.18x** |
+| Overwrite (all keys) | 157.0 ns [154.4 - 162.1] | 6.37 Mops/s | 169.0 ns [167.9 - 171.8] | 5.92 Mops/s | **1.08x** |
+| Mixed (80% get / 15% ins / 5% rem) | 296.4 ns [278.9 - 305.8] | 3.37 Mops/s | 284.4 ns [283.4 - 293.5] | 3.52 Mops/s | **0.96x** |
+| Remove (all keys) | 206.2 ns [203.7 - 208.0] | 4.85 Mops/s | 174.7 ns [173.1 - 181.5] | 5.72 Mops/s | **0.85x** |
+
+### Latency Profiles: RobinHoodTable vs std::collections::HashMap
+
+| Metric | RobinHoodTable | std::collections::HashMap |
+| :--- | :---: | :---: |
+| p50 | 0.120 µs | 0.040 µs |
+| p99 | 0.611 µs | 0.390 µs |
+| p99.9 | 1.062 µs | 0.541 µs |
+| p99.99 | 7.321 µs | 1.333 µs |
+| max | 4460.195 µs | 134747.812 µs |
+| Ops slower than 1 ms | 4 | 6 |
+
+### Top 5 Slowest Inserts: RobinHoodTable
+
+| Rank | Op Index | Latency (µs) | Capacity Change Measured |
+| :---: | :---: | :---: | :--- |
+| 1 | 917504 | 4460.19 µs | capacity changed: 1048576 -> 2097152 |
+| 2 | 458752 | 2457.57 µs | capacity changed: 524288 -> 1048576 |
+| 3 | 229376 | 1433.52 µs | capacity changed: 262144 -> 524288 |
+| 4 | 520192 | 1166.49 µs | capacity unchanged: 1048576 |
+| 5 | 114688 | 937.56 µs | capacity changed: 131072 -> 262144 |
+
+### Top 5 Slowest Inserts: std::collections::HashMap
+
+| Rank | Op Index | Latency (µs) | Event Description |
+| :---: | :---: | :---: | :--- |
+| 1 | 917504 | 134747.81 µs | std::HashMap insert operation #917504 |
+| 2 | 458752 | 59946.80 µs | std::HashMap insert operation #458752 |
+| 3 | 229376 | 17963.96 µs | std::HashMap insert operation #229376 |
+| 4 | 114688 | 4513.02 µs | std::HashMap insert operation #114688 |
+| 5 | 57344 | 2324.90 µs | std::HashMap insert operation #57344 |
+
+### Resize-Start Allocation Cost (RobinHoodTable::new)
+
+| Table Capacity | Allocation Size | Creation Latency (Median) |
+| :--- | :---: | :---: |
+| 2^20 (1,048,576 slots, ~42 MB) | 1.09 ms |
+| 2^22 (4,194,304 slots, ~168 MB) | 8.53 ms |
+| 2^24 (16,777,216 slots, ~671 MB) | 32.79 ms |
+
+### Hash Table Quality & Memory Metrics
+
+| Metric | RobinHoodTable | std::collections::HashMap |
+| :--- | :---: | :---: |
+| Max PSL | 10 | n/a |
+| Average PSL | 0.46 | n/a |
+| Measured Average Probes per Miss | 1.70 slots | n/a |
+| Final Load Factor | 47.7% | n/a |
+| Table Slot Size | 40 bytes | n/a |
+| Est. Memory / Key | 83.9 bytes | n/a |
+| Process VmRSS | 231.14 MB | 197.32 MB |

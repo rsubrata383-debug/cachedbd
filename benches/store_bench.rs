@@ -31,12 +31,18 @@ impl BenchRng {
         x
     }
 
-    /// Generates integer in `[min, max)` with wide arithmetic before casting.
+    /// Generates integer in `[min, max)` with wide arithmetic and high-order bits before casting.
     fn gen_range(&mut self, min: usize, max: usize) -> usize {
         assert!(min < max, "min must be strictly less than max");
         let diff = (max - min) as u64;
-        let offset = (self.next_u64() % diff) as usize;
+        let offset = ((self.next_u64() >> 32) % diff) as usize;
         min + offset
+    }
+
+    /// Generates boolean using MSB.
+    #[expect(dead_code, reason = "Utility method implementing AGENTS.md rule 11.1")]
+    fn gen_bool(&mut self) -> bool {
+        (self.next_u64() >> 63) == 1
     }
 }
 
@@ -76,6 +82,7 @@ fn format_vm_rss(rss_kb: Option<usize>) -> String {
 struct SlowOp {
     index: usize,
     latency_us: f64,
+    tag: &'static str,
     description: String,
 }
 
@@ -122,6 +129,9 @@ struct LatencyProfile {
     p99_99_us: f64,
     max_us: f64,
     slow_over_1ms_count: usize,
+    count_over_1ms_resize_started: usize,
+    count_over_1ms_migration_finished: usize,
+    count_over_1ms_unchanged: usize,
     slowest_5: Vec<SlowOp>,
 }
 
@@ -318,8 +328,12 @@ fn main() {
 
     // Latency tracking during measured insert
     let mut rh_insert_latencies = Vec::with_capacity(config.keys);
-    let mut rh_slow_heap: BinaryHeap<Reverse<(u32, usize, String)>> = BinaryHeap::new();
+    let mut rh_slow_heap: BinaryHeap<Reverse<(u32, usize, &'static str, String)>> =
+        BinaryHeap::new();
     let mut rh_slow_over_1ms = 0usize;
+    let mut rh_over_1ms_resize_started = 0usize;
+    let mut rh_over_1ms_migration_finished = 0usize;
+    let mut rh_over_1ms_unchanged = 0usize;
 
     // Phase 1: Insert (N keys from empty)
     {
@@ -342,17 +356,40 @@ fn main() {
             if run_idx == 0 {
                 // Record fine-grained latencies on run 0
                 for (idx, key) in insert_keys.into_iter().enumerate() {
+                    let res_before = table.is_resizing();
                     let cap_before = table.capacity();
                     let op_t0 = Instant::now();
                     let _ = table.insert(key, idx as u64);
                     let op_elapsed_ns = op_t0.elapsed().as_nanos().min(u128::from(u32::MAX)) as u32;
+                    let res_after = table.is_resizing();
+                    let cap_after = table.capacity();
+
+                    let tag = if !res_before && res_after {
+                        "resize started"
+                    } else if res_before && !res_after {
+                        "migration finished, old table dropped"
+                    } else {
+                        "unchanged"
+                    };
 
                     rh_insert_latencies.push(op_elapsed_ns);
                     if op_elapsed_ns >= 1_000_000 {
                         rh_slow_over_1ms = rh_slow_over_1ms.saturating_add(1);
+                        match tag {
+                            "resize started" => {
+                                rh_over_1ms_resize_started =
+                                    rh_over_1ms_resize_started.saturating_add(1);
+                            }
+                            "migration finished, old table dropped" => {
+                                rh_over_1ms_migration_finished =
+                                    rh_over_1ms_migration_finished.saturating_add(1);
+                            }
+                            _ => {
+                                rh_over_1ms_unchanged = rh_over_1ms_unchanged.saturating_add(1);
+                            }
+                        }
                     }
 
-                    let cap_after = table.capacity();
                     let desc = if cap_after == cap_before {
                         format!("capacity unchanged: {cap_before}")
                     } else {
@@ -362,7 +399,7 @@ fn main() {
                     if rh_slow_heap.len() < 5
                         || op_elapsed_ns > rh_slow_heap.peek().map_or(0, |r| r.0.0)
                     {
-                        rh_slow_heap.push(Reverse((op_elapsed_ns, idx, desc)));
+                        rh_slow_heap.push(Reverse((op_elapsed_ns, idx, tag, desc)));
                         if rh_slow_heap.len() > 5 {
                             rh_slow_heap.pop();
                         }
@@ -568,12 +605,16 @@ fn main() {
         p99_99_us: f64::from(rh_insert_latencies[(n_lat * 9999) / 10000]) / 1000.0,
         max_us: f64::from(rh_insert_latencies[n_lat.saturating_sub(1)]) / 1000.0,
         slow_over_1ms_count: rh_slow_over_1ms,
+        count_over_1ms_resize_started: rh_over_1ms_resize_started,
+        count_over_1ms_migration_finished: rh_over_1ms_migration_finished,
+        count_over_1ms_unchanged: rh_over_1ms_unchanged,
         slowest_5: {
             let mut ops: Vec<SlowOp> = rh_slow_heap
                 .into_iter()
-                .map(|Reverse((ns, idx, desc))| SlowOp {
+                .map(|Reverse((ns, idx, tag, desc))| SlowOp {
                     index: idx,
                     latency_us: f64::from(ns) / 1000.0,
+                    tag,
                     description: desc,
                 })
                 .collect();
@@ -821,12 +862,16 @@ fn main() {
         p99_99_us: f64::from(hm_insert_latencies[(n_lat_hm * 9999) / 10000]) / 1000.0,
         max_us: f64::from(hm_insert_latencies[n_lat_hm.saturating_sub(1)]) / 1000.0,
         slow_over_1ms_count: hm_slow_over_1ms,
+        count_over_1ms_resize_started: 0,
+        count_over_1ms_migration_finished: 0,
+        count_over_1ms_unchanged: hm_slow_over_1ms,
         slowest_5: {
             let mut ops: Vec<SlowOp> = hm_slow_heap
                 .into_iter()
                 .map(|Reverse((ns, idx, desc))| SlowOp {
                     index: idx,
                     latency_us: f64::from(ns) / 1000.0,
+                    tag: "n/a",
                     description: desc,
                 })
                 .collect();
@@ -842,7 +887,7 @@ fn main() {
     drop(hash_map);
 
     // =========================================================================
-    // 4. Benchmark Resize-Start Allocation Cost
+    // 4. Benchmark Resize-Start Allocation Cost and Table Drop Latency
     // =========================================================================
     println!("Measuring table allocation resize-start cost...");
     let resize_sizes: Vec<(usize, &'static str, bool)> = vec![
@@ -852,15 +897,20 @@ fn main() {
     ];
 
     let mut resize_costs = Vec::new();
-    for (cap, label, skip) in resize_sizes {
-        if skip {
-            resize_costs.push((label, "skipped in --smoke".to_string()));
+    for (cap, label, skip) in &resize_sizes {
+        if *skip {
+            resize_costs.push((*label, "skipped in --smoke".to_string()));
             continue;
         }
         let mut runs = Vec::with_capacity(3);
+        // 1 warmup run
+        {
+            let table = RobinHoodTable::<u64>::new(*cap, rh_seed);
+            drop(table);
+        }
         for _ in 0..3 {
             let t0 = Instant::now();
-            let table = RobinHoodTable::<u64>::new(cap, rh_seed);
+            let table = RobinHoodTable::<u64>::new(*cap, rh_seed);
             let elapsed = t0.elapsed();
             std::hint::black_box(&table);
             runs.push(elapsed);
@@ -868,7 +918,32 @@ fn main() {
         }
         runs.sort();
         let median_ms = runs[1].as_secs_f64() * 1000.0;
-        resize_costs.push((label, format!("{median_ms:.2} ms")));
+        resize_costs.push((*label, format!("{median_ms:.2} ms")));
+    }
+
+    println!("Measuring empty table drop latency...");
+    let mut drop_costs = Vec::new();
+    for (cap, label, skip) in &resize_sizes {
+        if *skip {
+            drop_costs.push((*label, "skipped in --smoke".to_string()));
+            continue;
+        }
+        let mut runs = Vec::with_capacity(3);
+        // 1 warmup run
+        {
+            let table = RobinHoodTable::<u64>::new(*cap, rh_seed);
+            drop(table);
+        }
+        for _ in 0..3 {
+            let table = RobinHoodTable::<u64>::new(*cap, rh_seed);
+            let t0 = Instant::now();
+            drop(table);
+            let elapsed = t0.elapsed();
+            runs.push(elapsed);
+        }
+        runs.sort();
+        let median_ms = runs[1].as_secs_f64() * 1000.0;
+        drop_costs.push((*label, format!("{median_ms:.2} ms")));
     }
 
     // =========================================================================
@@ -933,17 +1008,36 @@ fn main() {
 
     println!("### Top 5 Slowest Inserts: RobinHoodTable");
     println!();
-    println!("| Rank | Op Index | Latency (µs) | Capacity Change Measured |");
-    println!("| :---: | :---: | :---: | :--- |");
+    println!("| Rank | Op Index | Latency (µs) | Tag | Capacity Details |");
+    println!("| :---: | :---: | :---: | :---: | :--- |");
     for (rank, op) in rh_lat_profile.slowest_5.iter().enumerate() {
         println!(
-            "| {} | {} | {:.2} µs | {} |",
+            "| {} | {} | {:.2} µs | {} | {} |",
             rank + 1,
             op.index,
             op.latency_us,
+            op.tag,
             op.description
         );
     }
+    println!();
+
+    println!("### Inserts Slower Than 1 ms by Tag: RobinHoodTable");
+    println!();
+    println!("| Tag | Count |");
+    println!("| :--- | :---: |");
+    println!(
+        "| resize started | {} |",
+        rh_lat_profile.count_over_1ms_resize_started
+    );
+    println!(
+        "| migration finished, old table dropped | {} |",
+        rh_lat_profile.count_over_1ms_migration_finished
+    );
+    println!(
+        "| unchanged | {} |",
+        rh_lat_profile.count_over_1ms_unchanged
+    );
     println!();
 
     println!("### Top 5 Slowest Inserts: std::collections::HashMap");
@@ -966,6 +1060,15 @@ fn main() {
     println!("| Table Capacity | Allocation Size | Creation Latency (Median) |");
     println!("| :--- | :---: | :---: |");
     for (label, cost) in resize_costs {
+        println!("| {label} | {cost} |");
+    }
+    println!();
+
+    println!("### Empty Table Drop Latency (drop(RobinHoodTable))");
+    println!();
+    println!("| Table Capacity | Allocation Size | Drop Latency (Median) |");
+    println!("| :--- | :---: | :---: |");
+    for (label, cost) in drop_costs {
         println!("| {label} | {cost} |");
     }
     println!();

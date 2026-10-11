@@ -722,6 +722,7 @@ impl<V> RobinHoodTable<V> {
     }
 
     /// Returns the number of slot reads/probes inspected during a lookup for `key`.
+    #[doc(hidden)]
     #[must_use]
     pub fn lookup_probe_count(&self, key: &[u8]) -> usize {
         let hash = hash64(key, self.seed);
@@ -738,7 +739,9 @@ impl<V> RobinHoodTable<V> {
     ///
     /// Mutates the table and steps migration by up to [`MIGRATE_BATCH`] (16) buckets.
     pub fn get_mut(&mut self, key: &[u8]) -> Option<&mut V> {
-        let _migration_done = self.step_migration(MIGRATE_BATCH).is_ok();
+        if self.step_migration(MIGRATE_BATCH) == Err(TableFull) {
+            // A failed background migration step is not fatal, the tables stay valid, and the next operation retries.
+        }
         let hash = hash64(key, self.seed);
         self.get_mut_with_hash(hash, key)
     }
@@ -877,7 +880,9 @@ impl<V> RobinHoodTable<V> {
 
     /// Removes an entry by key from both tables, returning the value that was found.
     pub fn remove(&mut self, key: &[u8]) -> Option<V> {
-        let _migration_done = self.step_migration(MIGRATE_BATCH).is_ok();
+        if self.step_migration(MIGRATE_BATCH) == Err(TableFull) {
+            // A failed background migration step is not fatal, the tables stay valid, and the next operation retries.
+        }
         let hash = hash64(key, self.seed);
         self.remove_with_hash(hash, key)
     }
@@ -997,11 +1002,8 @@ mod tests {
 
     impl XorShift64 {
         fn new(seed: u64) -> Self {
-            Self(if seed == 0 {
-                0xCAFE_BABE_DEAD_BEEF
-            } else {
-                seed
-            })
+            assert_ne!(seed, 0, "XorShift64 seed must not be zero");
+            Self(seed)
         }
 
         fn next_u64(&mut self) -> u64 {
@@ -1813,14 +1815,16 @@ mod tests {
             for _ in 0..75_000 {
                 let was_resizing = our_table.is_resizing();
                 let r_raw = rng.next_u64();
-                let key_idx = (r_raw as usize) % num_keys;
-                let r = ((r_raw >> 32) % 100) as usize;
+                let key_idx = ((r_raw >> 32) % (num_keys as u64)) as usize;
+                let r = ((r_raw >> 48) % 100) as usize;
                 let key = &key_pool[key_idx];
                 let val = r_raw;
 
                 if r < 10 {
-                    let step_buckets = 1 + (r % 4);
-                    let _migration_done = our_table.step_migration(step_buckets).is_ok();
+                    let step_buckets = 1 + (((r_raw >> 16) % 4) as usize);
+                    if our_table.step_migration(step_buckets) == Err(TableFull) {
+                        // A failed background migration step is not fatal, the tables stay valid, and the next operation retries.
+                    }
                 } else {
                     match pick_phase_op(phase, r) {
                         DifferentialOp::Insert => {
