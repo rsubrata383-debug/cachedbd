@@ -155,18 +155,18 @@ cachedb/
 
 ### Week 5: Wire protocol
 
-- [ ] Implement frame encode/decode per your spec (magic, version, length, request ID, opcode, payload).
-- [ ] Implement a streaming parser that handles frames split across reads and multiple frames in one read.
-- [ ] Add protocol version negotiation (a `HELLO` exchange).
-- [ ] Add hard limits (max frame size, max argument count) to prevent abuse.
-- [ ] Fuzz the parser for an hour with no crashes.
+- [x] Implement frame encode/decode per your spec (magic, version, length, request ID, opcode, payload).
+- [x] Implement a streaming parser that handles frames split across reads and multiple frames in one read.
+- [x] Add protocol version negotiation (a `HELLO` exchange).
+- [x] Add hard limits (max frame size, max argument count) to prevent abuse.
+- [x] Fuzz the parser for an hour with no crashes.
 
 ### Week 6: Hash table
 
-- [ ] Design and implement your own hash table (choose: open addressing with robin hood probing, or chained buckets).
-- [ ] Choose a hash function (implement your own, for example a variant of a well-known non-cryptographic design), and add per-process random seeding.
-- [ ] Implement **incremental resizing** (migrate a few buckets per operation) so no operation causes a long pause.
-- [ ] Write property tests comparing it to a trivial reference map under random operations.
+- [x] Design and implement your own hash table (choose: open addressing with robin hood probing, or chained buckets).
+- [x] Choose a hash function (implement your own, for example a variant of a well-known non-cryptographic design), and add per-process random seeding.
+- [x] Implement **incremental resizing** (migrate a few buckets per operation) so no operation causes a long pause.
+- [x] Write property tests comparing it to a trivial reference map under random operations.
 - [ ] Benchmark insert/lookup/delete at 1M, 10M keys; record numbers.
 
 ### Week 7: Commands, part 1
