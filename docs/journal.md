@@ -854,21 +854,33 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - **Open Questions**:
   - Should duplicate Map keys be rejected or last-write-wins in spec v0.2?
   - Does spec v0.2 plan to define multi-item root payloads or formally restrict root payloads to exactly one item?
+  - A top-level item with an unknown tag gives error 1007 (connection closes), while the same item inside Array/Map is skipped. Is this what we want for future versions?
 
+---
 
+## 2026-10-11: Week 5 Step 5: Fuzzing Setup
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+- **Date**: 2026-10-11
+- **Summary**: Verified collection forward compatibility and unknown-tag dropping alignment for `Map` and `Array`, introduced standalone fuzz testing crate in `fuzz/` with 3 targets and seed corpus from all 8 spec examples, and added a 60-second CI smoke test job.
+- **Part A Results (Map & Unknown Tags)**:
+  - Verified `decode_map` behavior: when either the key or value of an entry has an unknown tag ($\ge 0x09$), the entire key-value pair is dropped while properly advancing the input cursor past both items. Subsequent entries remain completely aligned.
+  - Verified `Array` behavior: unknown items ($\ge 0x09$) in an array are safely skipped, and the remaining known items are collected into the `Array` without index disruption or misalignment.
+  - Added unit test `test_map_and_array_unknown_tags_alignment_and_dropping` in `src/proto/item.rs` validating:
+    - Map with an unknown key drops the pair.
+    - Map with an unknown value drops the pair.
+    - Map with an unknown pair flanked by known pairs drops only the unknown pair and retains the known pairs with accurate consumed byte count.
+    - Array with an unknown item in the middle skips the unknown item and retains surrounding items.
+- **Part B Results (Fuzz Targets & Corpus)**:
+  - Created standalone package `fuzz/` (`cachedb-fuzz`) with an empty workspace so it does not affect root crate builds or pollute normal cargo workflows.
+  - Implemented 3 dedicated fuzz targets in `fuzz/fuzz_targets/`:
+    - `decode_frame`: Validates crash-free decoding on arbitrary binary input, ensures `used <= data.len()`, and verifies re-encode / re-decode equality for valid frames.
+    - `decode_value`: Validates crash-free item AST decoding, ensures `used <= data.len()`, and validates re-encode / re-decode round-trip equality for valid values.
+    - `split_stream`: Validates streaming decode invariance by splitting arbitrary inputs into two chunks at all possible byte boundaries and confirming the emitted frame sequence matches single-buffer decoding.
+  - Generated seed corpora in `fuzz/corpus/decode_frame/` and `fuzz/corpus/decode_value/` containing all 8 canonical binary frames from `docs/spec/protocol.md` Section 10 (`example_1.bin` through `example_8.bin`).
+  - *Platform Note*: `libFuzzer` (`libfuzzer-sys`) requires Linux/POSIX/WSL runtime and does not build on Windows MSVC. Development on Windows relies on standard deterministic fuzzing tests in unit tests, while continuous coverage is executed in CI on Linux.
+- **Part C Results (CI Smoke Test)**:
+  - Added `fuzz-smoke` job to `.github/workflows/ci.yml` running on `ubuntu-latest` with nightly toolchain.
+  - Installs `cargo-fuzz` and executes 60-second smoke tests across all three targets (`decode_frame`, `decode_value`, `split_stream`) with a 2 GB RSS limit.
+  - Configured automated artifact upload for `fuzz/artifacts` on failure so crashes can be immediately inspected and reproduced.
 
 

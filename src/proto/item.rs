@@ -1012,6 +1012,76 @@ mod tests {
     }
 
     #[test]
+    fn test_map_and_array_unknown_tags_alignment_and_dropping() {
+        let item_unk = [0x09, 0x03, 0xAA, 0xBB, 0xCC];
+
+        // 1. Map with an unknown KEY: drops the whole pair, remaining pair kept
+        let mut map_unk_key = Vec::new();
+        map_unk_key.push(TAG_MAP);
+        encode_uvarint(2, &mut map_unk_key);
+        map_unk_key.extend_from_slice(&item_unk);
+        encode_value(&Value::Int(10), &mut map_unk_key).unwrap();
+        encode_value(&Value::Text("k2".to_string()), &mut map_unk_key).unwrap();
+        encode_value(&Value::Int(20), &mut map_unk_key).unwrap();
+
+        let (val_key, len_key) = decode_value(&map_unk_key).expect("decodes map");
+        assert_eq!(len_key, map_unk_key.len());
+        assert_eq!(
+            val_key,
+            Value::Map(vec![(Value::Text("k2".to_string()), Value::Int(20))])
+        );
+
+        // 2. Map with an unknown VALUE: drops the whole pair, remaining pair kept
+        let mut map_unk_val = Vec::new();
+        map_unk_val.push(TAG_MAP);
+        encode_uvarint(2, &mut map_unk_val);
+        encode_value(&Value::Text("k1".to_string()), &mut map_unk_val).unwrap();
+        map_unk_val.extend_from_slice(&item_unk);
+        encode_value(&Value::Text("k2".to_string()), &mut map_unk_val).unwrap();
+        encode_value(&Value::Int(20), &mut map_unk_val).unwrap();
+
+        let (val_val, len_val) = decode_value(&map_unk_val).expect("decodes map");
+        assert_eq!(len_val, map_unk_val.len());
+        assert_eq!(
+            val_val,
+            Value::Map(vec![(Value::Text("k2".to_string()), Value::Int(20))])
+        );
+
+        // 3. Map with unknown pair in the middle of known pairs
+        let mut map_mid = Vec::new();
+        map_mid.push(TAG_MAP);
+        encode_uvarint(3, &mut map_mid);
+        encode_value(&Value::Text("a".to_string()), &mut map_mid).unwrap();
+        encode_value(&Value::Int(1), &mut map_mid).unwrap();
+        map_mid.extend_from_slice(&item_unk);
+        encode_value(&Value::Text("skipped".to_string()), &mut map_mid).unwrap();
+        encode_value(&Value::Text("c".to_string()), &mut map_mid).unwrap();
+        encode_value(&Value::Int(3), &mut map_mid).unwrap();
+
+        let (val_mid, len_mid) = decode_value(&map_mid).expect("decodes map");
+        assert_eq!(len_mid, map_mid.len());
+        assert_eq!(
+            val_mid,
+            Value::Map(vec![
+                (Value::Text("a".to_string()), Value::Int(1)),
+                (Value::Text("c".to_string()), Value::Int(3)),
+            ])
+        );
+
+        // 4. Array with an unknown item in the middle
+        let mut arr_mid = Vec::new();
+        arr_mid.push(TAG_ARRAY);
+        encode_uvarint(3, &mut arr_mid);
+        encode_value(&Value::Int(1), &mut arr_mid).unwrap();
+        arr_mid.extend_from_slice(&item_unk);
+        encode_value(&Value::Int(3), &mut arr_mid).unwrap();
+
+        let (val_arr, len_arr) = decode_value(&arr_mid).expect("decodes array");
+        assert_eq!(len_arr, arr_mid.len());
+        assert_eq!(val_arr, Value::Array(vec![Value::Int(1), Value::Int(3)]));
+    }
+
+    #[test]
     fn test_error_item_invalid_code_and_utf8() {
         // Error code exceeding u16 (e.g. 70000 = 0x82 0xA2 0x04)
         let mut bad_code = vec![TAG_ERROR];

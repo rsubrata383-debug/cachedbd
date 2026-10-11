@@ -54,3 +54,32 @@ jobs:
           # Ignored tests run in parallel by default and share the process file descriptor limit.
           # Run with --test-threads=1 so each 10k connection test executes sequentially.
           cargo test --release --test soak -- --ignored --nocapture --test-threads=1
+
+  fuzz-smoke:
+    name: Fuzz smoke test (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run fuzz smoke tests
+        run: |
+          # Quick smoke test (60s per target) to catch immediate regressions in CI
+          # without burning runner minutes; full fuzz campaigns run out-of-band.
+          cargo fuzz run decode_frame -- -max_total_time=60 -rss_limit_mb=2048
+          cargo fuzz run decode_value -- -max_total_time=60 -rss_limit_mb=2048
+          cargo fuzz run split_stream -- -max_total_time=60 -rss_limit_mb=2048
+
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
