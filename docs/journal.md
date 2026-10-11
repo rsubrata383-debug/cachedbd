@@ -970,13 +970,13 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 ## 2026-10-11: Week 6 Plan (Draft) — Hash Table Only
 
 - **Date**: 2026-10-11
-- **Focus**: Building a scratch-built, high-performance in-memory hash table in `src/storage/` with incremental resizing, non-cryptographic hashing, and differential property testing.
+- **Focus**: Building a scratch-built, high-performance in-memory hash table in `src/store/` with incremental resizing, non-cryptographic hashing, and differential property testing.
 - **Decisions**:
   - **Keys are Bytes**: Per `values.md` Section 1.1 and `commands.md` Section 2.5, keys are arbitrary binary byte buffers (`Vec<u8>` / `&[u8]`) between 1 byte and 1 KB.
   - **Values in v0.1**: Stored as the owned enum `Value`. Boxing or compact flat-buffer encoding will be decided after Week 6 scale benchmarks.
   - **Networking Stays in Week 7**: Event loop wiring, socket dispatch, and session state are isolated to Week 7.
 
-### Step 1: Hash Function & Core Robin Hood Table Structure (`src/storage/`)
+### Step 1: Hash Function & Core Robin Hood Table Structure (`src/store/`)
 - **What to Build**:
   - Implement fast non-cryptographic hash function (e.g. SipHash-1-3 or Wyhash/FNV variant) with per-process random 64-bit seed.
   - Implement open-addressing hash table with **Robin Hood probing**:
@@ -1069,7 +1069,7 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 ## 2026-10-11: Week 6 Step 1: Hash Function and Robin Hood Table Core
 
 - **Date**: 2026-10-11
-- **Scope**: Implemented non-cryptographic hash function (`src/storage/hash.rs`) and core fixed-capacity Robin Hood hash table (`src/storage/table.rs`) in `src/storage/`.
+- **Scope**: Implemented non-cryptographic hash function (`src/store/hash.rs`) and core fixed-capacity Robin Hood hash table (`src/store/table.rs`) in `src/store/`.
 
 ### Step 0 Review:
 1. *Key Rules*: `commands.md` and `values.md` specify keys as arbitrary binary byte sequences (`&[u8]`). Empty keys (`""`) return error 2006 (`ERR_EMPTY_KEY`) and default max key size is 1 KB (1024 bytes). The low-level table accepts any byte slice (`Box<[u8]>`), including empty and large keys; key length validation (empty key and 1 KB limit) is enforced at the command parsing/dispatch layer in Week 7, not by the storage table.
@@ -1087,3 +1087,10 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 
 ### Open Questions for Spec v0.2:
 - Does future spec v0.2 require typed keys (e.g. integer or text keys) in collections or command dispatch, or remain purely raw binary? (Values spec confirms raw binary `&[u8]`).
+
+---
+
+## 2026-10-11: Fix: Module Name
+
+- **Date**: 2026-10-11
+- **Summary**: The hash table was first created in `src/storage/` by mistake. The project layout from the roadmap uses `src/store/`. Moved to `src/store/`.

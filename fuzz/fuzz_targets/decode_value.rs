@@ -17,4 +17,3 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(re_decoded, val);
     }
 });
-

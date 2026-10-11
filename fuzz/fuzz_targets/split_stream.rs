@@ -71,4 +71,3 @@ fuzz_target!(|data: &[u8]| {
 
     assert_eq!(full_frames, chunked_frames);
 });
-

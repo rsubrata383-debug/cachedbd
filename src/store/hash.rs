@@ -77,7 +77,7 @@ fn mum(a: u64, b: u64) -> u64 {
 /// # Examples
 ///
 /// ```
-/// use cachedb::storage::hash::hash64;
+/// use cachedb::store::hash::hash64;
 ///
 /// let h1 = hash64(b"hello", 42);
 /// let h2 = hash64(b"hello", 42);
@@ -233,4 +233,3 @@ mod tests {
         }
     }
 }
-

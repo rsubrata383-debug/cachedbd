@@ -98,10 +98,13 @@ cachedb/
 │   │   ├── item.rs             # Value AST encoder and decoder
 │   │   ├── limits.rs           # Framing limits (max_frame_size, max_args)
 │   │   └── varint.rs           # LEB128 unsigned and zigzag varints
-│   └── storage/                # In-memory storage engine
+│   └── store/                  # In-memory store engine
+│       ├── eviction.rs         # Memory eviction policies
+│       ├── expiry.rs           # TTL expiration tracking
 │       ├── hash.rs             # 64-bit seeded non-cryptographic hash function
 │       ├── table.rs            # Robin Hood hash table core
-│       └── mod.rs              # Storage module definitions
+│       ├── value.rs            # Value object representation
+│       └── mod.rs              # Store module definitions
 ├── fuzz/                       # Cargo-fuzz test suite
 │   ├── Cargo.toml              # Fuzz targets configuration
 │   └── fuzz_targets/           # libFuzzer fuzz harnesses

@@ -38,6 +38,7 @@ Code MUST pass all of these:
 
 ```text
 cargo fmt --check
+cargo fmt --check -- --config newline_style=Unix
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 cargo test --doc
@@ -354,7 +355,7 @@ When you give Rust code:
 
 Before you finish, check:
 
-- [ ] `cargo fmt --check` passes
+- [ ] `cargo fmt --check` and `cargo fmt --check -- --config newline_style=Unix` pass (CI runs on Linux; the second command catches line-ending and trailing-blank-line problems that Windows hides)
 - [ ] `cargo clippy -- -D warnings` passes
 - [ ] `cargo test` and `cargo test --doc` pass
 - [ ] Names follow the conventions (acronyms as words, no `get_`)
