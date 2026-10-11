@@ -686,7 +686,7 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
     2. Connects 10,000 real clients in batches of 200, interleaving `event_loop.run_once` ticks to accept connections without overflowing the listen backlog.
     3. Verifies that all 10,000 connections are accepted, registered in epoll, and idle.
     4. Proves I/O dispatch under full scale: while 10,000 connections stay idle, 3 clients (indices 0, 5,000, 9,999) send messages, and `EventLoop` ticks route reads, writes, and echoes back with exact byte matches.
-    5. Measures elapsed time and memory footprint (VmRSS from `/proc/self/status`): to be measured in CI.
+    5. Measures elapsed time and memory footprint (VmRSS from `/proc/self/status`): ~405 ms connect time and 43,428 kB VmRSS delta (~4.3 kB/conn) measured in CI.
     6. Drops all clients, runs drain ticks until all connections are cleaned up and deregistered from epoll, and verifies that `ConnectionTable` is completely empty.
 
 ---
@@ -704,6 +704,24 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   3. Added `--test-threads=1` to the CI soak test step so 10k tests execute sequentially without competing for file descriptors. Reduced job timeout to 10 minutes.
 - **Note for Later**:
   - A production database server must support larger listen backlogs than the 128 provided by Rust's standard `TcpListener::bind` (e.g., using `libc::listen` with `SOMAXCONN` / configurable backlog). A future low-level listener helper should live in `src/net/sys.rs`.
+
+---
+
+## 2026-10-11: 10k real TCP connection test passed in CI
+
+- **Date**: 2026-10-11
+- **Environment**: GitHub Actions CI (`ubuntu-latest`, release profile, `ulimit -n 30000`, `--test-threads=1`).
+- **Results**:
+  - `test_ten_thousand_real_tcp_event_loop_idle_connections`:
+    - Connected and accepted 10,000 real TCP clients in about 405 ms.
+    - Memory: VmRSS before = 2,716 kB, after = 46,144 kB, delta = 43,428 kB (about 4.3 kB per connection).
+  - `test_ten_thousand_real_tcp_idle_connections`: also passed.
+  - Whole soak suite: 2 tests passed in 1.34 s.
+- **Notes & Observations**:
+  - VmRSS counts only the process's own memory. Kernel socket memory is not counted.
+  - The test's client sockets are in the same process, so the number may be a little higher than a real server would show.
+  - CI runner numbers can change from run to run. Use them as a rough guide, not an exact promise.
+  - The earlier failure (batch of 200 vs listen backlog 128) is fixed. The soak job is now green.
 
 
 
