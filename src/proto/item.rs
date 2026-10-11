@@ -207,10 +207,26 @@ fn encode_value_depth(value: &Value, out: &mut Vec<u8>, depth: usize) -> Result<
 /// - [`ProtoError::ERR_MALFORMED_VARINT`] (`1005`): Varint encoding is corrupted or overflows 64 bits.
 /// - [`ProtoError::ERR_MAX_DEPTH_EXCEEDED`] (`3005`): Collection nesting exceeds [`MAX_NESTING_DEPTH`] (8 levels).
 pub fn decode_value(input: &[u8]) -> Result<(Value, usize), ProtoError> {
-    decode_value_depth(input, 0)
+    decode_value_with_max_depth(input, MAX_NESTING_DEPTH)
 }
 
-fn decode_value_depth(input: &[u8], depth: usize) -> Result<(Value, usize), ProtoError> {
+/// Deserializes a [`Value`] from a slice with an explicit maximum collection nesting depth.
+///
+/// # Errors
+///
+/// Returns [`ProtoError::ERR_MAX_DEPTH_EXCEEDED`] if collection nesting reaches or exceeds `max_depth`.
+pub fn decode_value_with_max_depth(
+    input: &[u8],
+    max_depth: usize,
+) -> Result<(Value, usize), ProtoError> {
+    decode_value_depth(input, 0, max_depth)
+}
+
+fn decode_value_depth(
+    input: &[u8],
+    depth: usize,
+    max_depth: usize,
+) -> Result<(Value, usize), ProtoError> {
     let (&tag, rest) = input
         .split_first()
         .ok_or(ProtoError::ERR_MALFORMED_PAYLOAD)?;
@@ -222,8 +238,8 @@ fn decode_value_depth(input: &[u8], depth: usize) -> Result<(Value, usize), Prot
         TAG_BOOL => decode_bool(rest),
         TAG_TEXT => decode_text(rest),
         TAG_BYTES => decode_bytes(rest),
-        TAG_ARRAY => decode_array(rest, depth),
-        TAG_MAP => decode_map(rest, depth),
+        TAG_ARRAY => decode_array(rest, depth, max_depth),
+        TAG_MAP => decode_map(rest, depth, max_depth),
         TAG_ERROR => decode_error(rest),
         _ => Err(ProtoError::ERR_UNKNOWN_TYPE_TAG),
     }
@@ -293,8 +309,8 @@ fn decode_bytes(rest: &[u8]) -> Result<(Value, usize), ProtoError> {
     Ok((Value::Bytes(payload_bytes.to_vec()), 1 + varint_len + len))
 }
 
-fn decode_array(rest: &[u8], depth: usize) -> Result<(Value, usize), ProtoError> {
-    if depth >= MAX_NESTING_DEPTH {
+fn decode_array(rest: &[u8], depth: usize, max_depth: usize) -> Result<(Value, usize), ProtoError> {
+    if depth >= max_depth {
         return Err(ProtoError::ERR_MAX_DEPTH_EXCEEDED);
     }
     let (raw_count, varint_len) = match decode_uvarint(rest)? {
@@ -321,7 +337,7 @@ fn decode_array(rest: &[u8], depth: usize) -> Result<(Value, usize), ProtoError>
             let skipped = skip_unknown_tag(&rest[cursor..])?;
             cursor += skipped;
         } else {
-            let (item, consumed) = decode_value_depth(&rest[cursor..], depth + 1)?;
+            let (item, consumed) = decode_value_depth(&rest[cursor..], depth + 1, max_depth)?;
             items.push(item);
             cursor += consumed;
         }
@@ -330,8 +346,8 @@ fn decode_array(rest: &[u8], depth: usize) -> Result<(Value, usize), ProtoError>
     Ok((Value::Array(items), 1 + cursor))
 }
 
-fn decode_map(rest: &[u8], depth: usize) -> Result<(Value, usize), ProtoError> {
-    if depth >= MAX_NESTING_DEPTH {
+fn decode_map(rest: &[u8], depth: usize, max_depth: usize) -> Result<(Value, usize), ProtoError> {
+    if depth >= max_depth {
         return Err(ProtoError::ERR_MAX_DEPTH_EXCEEDED);
     }
     let (raw_count, varint_len) = match decode_uvarint(rest)? {
@@ -367,7 +383,7 @@ fn decode_map(rest: &[u8], depth: usize) -> Result<(Value, usize), ProtoError> {
             continue;
         }
 
-        let (key, key_consumed) = decode_value_depth(&rest[cursor..], depth + 1)?;
+        let (key, key_consumed) = decode_value_depth(&rest[cursor..], depth + 1, max_depth)?;
         cursor += key_consumed;
 
         if cursor >= rest.len() {
@@ -380,7 +396,7 @@ fn decode_map(rest: &[u8], depth: usize) -> Result<(Value, usize), ProtoError> {
             continue;
         }
 
-        let (val, val_consumed) = decode_value_depth(&rest[cursor..], depth + 1)?;
+        let (val, val_consumed) = decode_value_depth(&rest[cursor..], depth + 1, max_depth)?;
         cursor += val_consumed;
 
         pairs.push((key, val));

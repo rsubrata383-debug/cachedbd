@@ -1,0 +1,56 @@
+name: Long Fuzz
+
+# Extended fuzzing campaign to fulfill the roadmap's "fuzz the parser for an hour with no crashes" criteria.
+# Start manually on demand from the GitHub Actions tab.
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Duration to run each fuzz target in minutes (default 60)"
+        required: false
+        default: "60"
+        type: string
+
+env:
+  RUST_BACKTRACE: "1"
+
+jobs:
+  fuzz-long:
+    name: Long Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [decode_frame, decode_value, split_stream]
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run extended fuzz campaign
+        run: |
+          # Run the specified fuzz target for the requested duration (default 3600 seconds / 60 minutes)
+          cargo fuzz run ${{ matrix.target }} -- -max_total_time=$((${{ inputs.minutes }} * 60)) -rss_limit_mb=2048
+
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-long-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts
+
+      - name: Upload grown corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}
+          retention-days: 14
+

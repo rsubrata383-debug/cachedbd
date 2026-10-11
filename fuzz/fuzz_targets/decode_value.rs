@@ -1,10 +1,13 @@
 #![no_main]
 
-use cachedb::proto::{decode_value, encode_value};
+use cachedb::proto::{HelloRequest, HelloResponse, decode_value, encode_value};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     if let Ok((val, _used)) = decode_value(data) {
+        let _ = HelloRequest::from_value(&val);
+        let _ = HelloResponse::from_value(&val);
+
         let mut encoded = Vec::new();
         encode_value(&val, &mut encoded).expect("encode_value must succeed for decoded value");
 

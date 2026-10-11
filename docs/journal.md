@@ -906,4 +906,116 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - **Open Design Note**:
   - Frame.header.payload_len is the wire value. After skipping unknown items inside Array/Map, it can be larger than the length of a re-encoded payload. Consider removing payload_len from Frame (derive it when encoding) in a future cleanup.
 
+---
+
+## 2026-10-11: Week 5 Core Complete (Premature Milestone Note)
+
+> **Note**: This milestone marked core wire framing and encoding/decoding completion, but Week 5 in `cachedb-roadmap.md` also requires HELLO negotiation, hard limits (max arguments), and a one-hour fuzzing run. See correction and Step 6 below.
+
+- **Date**: 2026-10-11
+- **Summary**: Core binary frame encoding and decoding completed and verified across all platforms and CI workflows.
+- **What Exists**:
+  - `Header`: 14-byte wire header representation (`magic`, `version`, `flags`, `request_id`, `opcode`, `payload_len`), endianness-safe encode/decode, opcode mapping, fast header validation.
+  - `Varint`: Unsigned LEB128 (`encode_uvarint`, `decode_uvarint`), signed zigzag LEB128 (`encode_ivarint`, `decode_ivarint`, `zigzag_encode`, `zigzag_decode`) with overflow detection.
+  - `Value`: Owned AST representation for all 9 spec types (`Nil`, `Int`, `Float`, `Bool`, `Text`, `Bytes`, `Array`, `Map`, `Error`), canonical encoding/decoding, bitwise float comparisons, and Section 4.3 extension tag skipping (`skip_value`).
+  - `Frame`: Complete frame representation, atomic `encode_frame` / `encode_frame_with_limit` (truncation on error, 64 MB guard), zero-copy streaming `decode_frame` / `decode_frame_with_limit` with partial buffer handling (`Decoded::NeedMore`).
+  - Unit & Integration Tests: Exact byte round-trip matching for all 8 specification hex examples from `docs/spec/protocol.md` Section 10, exhaustive byte-offset split-read streaming tests, and deterministic randomized round-trips.
+- **CI Results**:
+  - 3 isolated fuzz smoke jobs in GitHub Actions (`decode_frame`, `decode_value`, `split_stream`), running 60 seconds each on Linux nightly with seed corpora and regression seeds.
+  - Sanitizer job added (AddressSanitizer on Linux nightly). If it fails with something that looks like a false alarm from std, record it here and do not hide it.
+- **First Fuzz Finding**:
+  - Fuzz check falsely failed on a 29-byte frame because skipped unknown tags inside `Array` naturally shrink the re-encoded `payload_len` relative to the wire header; the decoder was verified 100% spec-compliant and the test assertion was corrected.
+- **Consolidated Open Questions for Spec v0.2**:
+  1. *Unknown opcode error code*: `Header::decode` returns `ERR_UNKNOWN_COMMAND` (`2001`); should spec v0.2 define a dedicated 1xxx framing error code (e.g. `ERR_UNKNOWN_OPCODE`) for unrecognized wire opcodes?
+  2. *Non-canonical varints*: The specification is silent on non-shortest LEB128 encodings (e.g. `0x80 0x00` for 0); our parser currently accepts standard LEB128 encodings. Spec v0.2 should clarify if canonical shortest-form is mandatory.
+  3. *Top-level unknown tag vs collections*: A top-level item with an unknown tag gives error 1007 (connection closes), while the same item inside `Array`/`Map` is safely skipped per Section 4.3. Is this asymmetry intended for future versions?
+  4. *Memory amplification / item-count limit*: A 64 MB frame containing 1-byte items (e.g. `Nil`) can allocate tens of millions of AST nodes, causing memory amplification. Should spec v0.2 introduce an item-count limit or total-items budget?
+  5. *Map duplicate keys and key types*: Neither `protocol.md` nor `values.md` specifies key type restrictions or behavior for duplicate keys (reject vs last-write-wins).
+  6. *`payload_len` in `Frame`*: `Frame.header.payload_len` is the wire value. After skipping unknown items inside Array/Map, it can be larger than the length of a re-encoded payload. Consider removing `payload_len` from `Frame` (derive it when encoding) in a future cleanup.
+
+---
+
+## 2026-10-11: Correction: Week 5 is Not Done
+
+- **Date**: 2026-10-11
+- **Reason**: The earlier entry marked Week 5 complete based on parser/serializer milestones. However, `cachedb-roadmap.md` defines three remaining deliverables for Week 5:
+  1. Protocol version negotiation (`HELLO` exchange).
+  2. Hard limits (`max_args` of 65,536 items on command requests, checked before reading items or allocating).
+  3. Fuzzing campaign for an hour with zero crashes.
+- **Action**: Phase 1 Week 5 status in `README.md` reset to *In progress*.
+
+---
+
+## 2026-10-11: Week 5 Step 6: HELLO, Limits, Long Fuzz
+
+- **Date**: 2026-10-11
+- **Summary**: Implemented protocol-level HELLO exchange structures, added protocol Limits with immediate argument count bounds enforcement, and created the on-demand 1-hour fuzzing workflow.
+- **Deliverables**:
+  - **HELLO Handshake Module (`src/proto/hello.rs`)**:
+    - `HelloRequest`: represents client handshake payload (`protocol_version`, `client_name`, optional `auth_token`). `to_value` and `from_value` enforce exact Array shape (2 or 3 items), field types, non-empty client name $\le 1024$ bytes.
+    - `HelloResponse`: represents server metadata Map payload (`server_name`, `server_version`, `protocol_version`, `client_id`, optional limit metadata).
+    - `negotiate_version`: strictly enforces `protocol_version == 1` per v0.1 frozen spec, returning `ERR_UNSUPPORTED_PROTOCOL_VERSION` (`1001`) otherwise.
+  - **Hard Limits Module (`src/proto/limits.rs`)**:
+    - `Limits`: configurable framing limits (`max_frame_size = 64 MB`, `max_args = 65,536`, `max_depth = 8`). Note: key size (1 KB) and value size (32 MB) belong to command dispatch in Week 7.
+    - `decode_frame_with_limits`: checks `max_args` on `Opcode::Command` requests *immediately* upon reading the Array length, before reading items and before reserving vector capacity. Returns `ERR_TOO_MANY_ARGS` (`2007`).
+    - Propagates configurable `max_depth` to `decode_value_with_max_depth`.
+  - **Long Fuzz Campaign Workflow (`.github/workflows/fuzz-long.yml`)**:
+    - `workflow_dispatch` manual trigger with configurable duration (default 60 minutes).
+    - Matrix across `decode_frame`, `decode_value`, and `split_stream`.
+    - Uploads grown corpus artifacts with 14-day retention, and failure artifacts on crash.
+    - Updated `fuzz/fuzz_targets/decode_value.rs` to call `HelloRequest::from_value` and `HelloResponse::from_value` to ensure zero panics on arbitrary parsed values.
+
+---
+
+## 2026-10-11: Week 6 Plan (Draft) — Hash Table Only
+
+- **Date**: 2026-10-11
+- **Focus**: Building a scratch-built, high-performance in-memory hash table in `src/storage/` with incremental resizing, non-cryptographic hashing, and differential property testing.
+- **Decisions**:
+  - **Keys are Bytes**: Per `values.md` Section 1.1 and `commands.md` Section 2.5, keys are arbitrary binary byte buffers (`Vec<u8>` / `&[u8]`) between 1 byte and 1 KB.
+  - **Values in v0.1**: Stored as the owned enum `Value`. Boxing or compact flat-buffer encoding will be decided after Week 6 scale benchmarks.
+  - **Networking Stays in Week 7**: Event loop wiring, socket dispatch, and session state are isolated to Week 7.
+
+### Step 1: Hash Function & Core Robin Hood Table Structure (`src/storage/`)
+- **What to Build**:
+  - Implement fast non-cryptographic hash function (e.g. SipHash-1-3 or Wyhash/FNV variant) with per-process random 64-bit seed.
+  - Implement open-addressing hash table with **Robin Hood probing**:
+    - Slots store key bytes (`Vec<u8>`), `Value`, and probe sequence length (PSL).
+    - Insert uses "rich take from the poor" swap rule.
+    - Backward-shift deletion avoids tombstone accumulation.
+- **What to Test**:
+  - Collision resolution, probe length distribution, basic insert/lookup/remove correctness.
+
+### Step 2: Incremental Resizing (Zero-Stall Rehashing)
+- **What to Build**:
+  - Dual-table structure (`old_table` and `new_table`) when load factor exceeds threshold (e.g., 0.85).
+  - Paced migration: each operation migrates $k$ consecutive buckets (e.g. 16 buckets).
+  - Lookups check `new_table`, then `old_table`. Inserts/updates target `new_table`.
+  - Active tick migration: timer tick migrates buckets to ensure completion even under read-only traffic.
+- **What to Test**:
+  - Lookups, updates, and deletes during mid-resize state; prove zero dropped keys.
+
+### Step 3: Differential Property Testing & Scale Benchmarks
+- **What to Build**:
+  - Property test comparing Robin Hood table with `std::collections::HashMap` under 100,000+ random operations.
+  - Scale benchmark in `benches/store_bench.rs` measuring throughput and latency at 1M and 10M keys.
+
+---
+
+## Week 7 Start: Network Wiring (Draft)
+
+- **Focus**: Connecting `src/proto` to `src/net`, managing connection session state, and dispatching core commands over live sockets.
+- **Step 1: Protocol Event Loop Adapter & Session State**:
+  - Drain bytes from connection `ReadBuffer` into `decode_frame_with_limits`.
+  - Session state machine: `Handshake` (requires `HELLO`), `Ready`, `Closing`.
+  - `HELLO` handler: validate `HelloRequest`, respond with `HelloResponse` frame.
+  - `PING` command: client sends `COMMAND` frame (`opcode = 0x0002`, `flags = 0x00`) with payload `Array([Text("ping")])`; server replies with `COMMAND` frame (`opcode = 0x0002`, `flags = 0x01`) and payload `Text("pong")` (per Examples 1 & 2). *Commands are payload verbs, not header opcodes.*
+- **Step 2: Protocol Error Handling and Socket Teardown**:
+  - **Fatal 1xxx Framing Errors**:
+    - If the header was intact enough to read `request_id` (e.g. `1001` unsupported version, `1002` unsupported flag per Example 8): send a structured error response frame (`flags = 0x03`, payload `Error { code, message }`) and *then* close the connection.
+    - If framing corruption occurs before header completion (e.g. `1004` invalid magic `0xCA 0xDB`): close the TCP connection immediately with no reply.
+  - **Application Errors (2xxx)**: send error frame (`flags = 0x03`) and keep the connection open.
+
+
+
 

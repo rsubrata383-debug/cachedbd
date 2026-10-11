@@ -2,10 +2,12 @@
 
 use crate::proto::Decoded;
 use crate::proto::Frame;
-use crate::proto::header::{DEFAULT_MAX_PAYLOAD_LEN, HEADER_LEN, Header, ProtoError};
-use crate::proto::item::decode_value;
+use crate::proto::header::{HEADER_LEN, Header, Opcode, ProtoError};
+use crate::proto::item::{TAG_ARRAY, decode_value_with_max_depth};
+use crate::proto::limits::Limits;
+use crate::proto::varint::decode_uvarint;
 
-/// Decodes a complete [`Frame`] from a stream buffer using the default 64 MB maximum payload limit.
+/// Decodes a complete [`Frame`] from a stream buffer using the default protocol limits.
 ///
 /// # Outcomes
 ///
@@ -15,9 +17,9 @@ use crate::proto::item::decode_value;
 /// 2. `Ok(Decoded::Complete((frame, used_bytes)))`: A complete and valid frame was parsed. `used_bytes`
 ///    is the exact number of bytes consumed (`14 + header.payload_len as usize`). The caller can consume
 ///    these bytes and immediately call `decode_frame` on the remainder of the buffer (pipelining).
-/// 3. `Err(ProtoError)`: A framing, header, or payload corruption error occurred (such as invalid magic,
-///    unsupported version, reserved flag, opcode mismatch, payload exceeding 64 MB, or payload decoding
-///    failure). Per protocol specification, fatal framing errors indicate connection closure.
+/// 3. `Err(ProtoError)`: A framing, header, limits, or payload corruption error occurred (such as invalid magic,
+///    unsupported version, reserved flag, opcode mismatch, payload exceeding 64 MB, argument count exceeding
+///    65,536, or payload decoding failure). Per protocol specification, fatal framing errors indicate connection closure.
 ///
 /// # Streaming Efficiency
 ///
@@ -32,10 +34,11 @@ use crate::proto::item::decode_value;
 /// - [`ProtoError::ERR_UNSUPPORTED_FLAG`] (`1002`): Reserved flag bits 3..7 are set.
 /// - [`ProtoError::ERR_UNKNOWN_COMMAND`] (`2001`): Opcode is unrecognized.
 /// - [`ProtoError::ERR_FRAME_TOO_LARGE`] (`1003`): `payload_len` exceeds 64 MB.
+/// - [`ProtoError::ERR_TOO_MANY_ARGS`] (`2007`): COMMAND request Array count exceeds argument limit.
 /// - [`ProtoError::ERR_MALFORMED_PAYLOAD`] (`1006`): Payload bytes are malformed, truncated, or contain
 ///   unconsumed trailing bytes after the single top-level item.
 pub fn decode_frame(buf: &[u8]) -> Result<Decoded<(Frame, usize)>, ProtoError> {
-    decode_frame_with_limit(buf, DEFAULT_MAX_PAYLOAD_LEN)
+    decode_frame_with_limits(buf, &Limits::default())
 }
 
 /// Decodes a complete [`Frame`] from a stream buffer with an explicit maximum payload size limit.
@@ -47,9 +50,35 @@ pub fn decode_frame_with_limit(
     buf: &[u8],
     max_payload_len: u32,
 ) -> Result<Decoded<(Frame, usize)>, ProtoError> {
+    let limits = Limits {
+        max_frame_size: max_payload_len as usize,
+        ..Limits::default()
+    };
+    decode_frame_with_limits(buf, &limits)
+}
+
+/// Decodes a complete [`Frame`] from a stream buffer enforcing configurable operational [`Limits`].
+///
+/// # Limits Enforced
+///
+/// 1. `max_frame_size`: Frame payload size is validated immediately after 14 header bytes.
+/// 2. `max_args`: If the frame is a `COMMAND` request whose top-level item is an `Array`, its item count
+///    is validated as soon as the varint count is read, **before** decoding any items and before reserving memory.
+///    Breaching this limit returns [`ProtoError::ERR_TOO_MANY_ARGS`] (`2007`).
+/// 3. `max_depth`: Collection nesting depth is enforced against `limits.max_depth`.
+///
+/// # Errors
+///
+/// Returns a [`ProtoError`] if framing, header, limits, or payload validation fails.
+pub fn decode_frame_with_limits(
+    buf: &[u8],
+    limits: &Limits,
+) -> Result<Decoded<(Frame, usize)>, ProtoError> {
     if buf.len() < HEADER_LEN {
         return Ok(Decoded::NeedMore);
     }
+
+    let max_payload_len = u32::try_from(limits.max_frame_size).unwrap_or(u32::MAX);
 
     // Decode and validate 14-byte header immediately.
     // If the header is invalid (e.g. payload_len > max), this returns Err right away,
@@ -68,7 +97,22 @@ pub fn decode_frame_with_limit(
     }
 
     let payload_slice = &buf[HEADER_LEN..total_frame_len];
-    let (payload, consumed) = decode_value(payload_slice)?;
+
+    // For a COMMAND request, check max_args immediately before decoding array elements or reserving memory.
+    if header.opcode == Opcode::Command
+        && header.flags == 0x00
+        && payload_slice.first() == Some(&TAG_ARRAY)
+    {
+        let (raw_count, _) = match decode_uvarint(&payload_slice[1..])? {
+            Decoded::Complete((val, len)) => (val, len),
+            Decoded::NeedMore => return Err(ProtoError::ERR_MALFORMED_PAYLOAD),
+        };
+        if raw_count > limits.max_args as u64 {
+            return Err(ProtoError::ERR_TOO_MANY_ARGS);
+        }
+    }
+
+    let (payload, consumed) = decode_value_with_max_depth(payload_slice, limits.max_depth)?;
 
     // Protocol requires the payload to match the declared payload_len exactly (no trailing junk).
     if consumed != payload_len {
@@ -574,5 +618,84 @@ mod tests {
         assert_eq!(re_frame.header.request_id, frame.header.request_id);
         assert_eq!(re_frame.header.opcode, frame.header.opcode);
         assert_eq!(re_frame.payload, frame.payload);
+    }
+
+    #[test]
+    fn test_limits_max_args_accepted_and_rejected() {
+        let custom_limits = Limits {
+            max_args: 100,
+            ..Limits::default()
+        };
+
+        // 1. Exactly max_args (100) items -> accepted
+        let mut payload_100 = Vec::new();
+        payload_100.push(TAG_ARRAY);
+        crate::proto::varint::encode_uvarint(100, &mut payload_100);
+        payload_100.resize(payload_100.len() + 100, crate::proto::item::TAG_NIL);
+        let hdr_100 = Header::new(0, 1, Opcode::Command, payload_100.len() as u32);
+        let mut frame_100 = Vec::new();
+        frame_100.extend_from_slice(&hdr_100.to_bytes());
+        frame_100.extend_from_slice(&payload_100);
+
+        let res_100 =
+            decode_frame_with_limits(&frame_100, &custom_limits).expect("decodes 100 args");
+        assert!(matches!(res_100, Decoded::Complete(_)));
+
+        // 2. max_args + 1 (101) items -> rejected with ERR_TOO_MANY_ARGS (2007)
+        let mut payload_101 = Vec::new();
+        payload_101.push(TAG_ARRAY);
+        crate::proto::varint::encode_uvarint(101, &mut payload_101);
+        payload_101.resize(payload_101.len() + 101, crate::proto::item::TAG_NIL);
+        let hdr_101 = Header::new(0, 1, Opcode::Command, payload_101.len() as u32);
+        let mut frame_101 = Vec::new();
+        frame_101.extend_from_slice(&hdr_101.to_bytes());
+        frame_101.extend_from_slice(&payload_101);
+
+        let err = decode_frame_with_limits(&frame_101, &custom_limits).unwrap_err();
+        assert_eq!(err, ProtoError::ERR_TOO_MANY_ARGS);
+        assert_eq!(err.code(), 2007);
+
+        // 3. Rejection happens quickly before reading elements (truncated buffer with count 101)
+        let mut truncated = Vec::new();
+        truncated.extend_from_slice(&Header::new(0, 1, Opcode::Command, 500).to_bytes());
+        truncated.push(TAG_ARRAY);
+        crate::proto::varint::encode_uvarint(101, &mut truncated);
+        // Pad to 514 bytes so total_frame_len arrives
+        truncated.resize(14 + 500, 0);
+        let err_fast = decode_frame_with_limits(&truncated, &custom_limits).unwrap_err();
+        assert_eq!(err_fast, ProtoError::ERR_TOO_MANY_ARGS);
+    }
+
+    #[test]
+    fn test_limits_max_frame_size_rejected_at_header_time() {
+        let custom_limits = Limits {
+            max_frame_size: 1000,
+            ..Limits::default()
+        };
+        // Frame claims payload_len = 1001
+        let hdr = Header::new(0, 1, Opcode::Command, 1001);
+        let err = decode_frame_with_limits(&hdr.to_bytes(), &custom_limits).unwrap_err();
+        assert_eq!(err, ProtoError::ERR_FRAME_TOO_LARGE);
+    }
+
+    #[test]
+    fn test_limits_custom_depth_limit() {
+        let custom_limits = Limits {
+            max_depth: 3,
+            ..Limits::default()
+        };
+        // Build 4 levels of nested Arrays: Array(Array(Array(Array(Nil))))
+        let val_depth_4 = Value::Array(vec![Value::Array(vec![Value::Array(vec![Value::Array(
+            vec![Value::Nil],
+        )])])]);
+        let mut encoded = Vec::new();
+        crate::proto::item::encode_value(&val_depth_4, &mut encoded).unwrap();
+        let hdr = Header::new(0, 1, Opcode::Command, encoded.len() as u32);
+        let mut frame_buf = Vec::new();
+        frame_buf.extend_from_slice(&hdr.to_bytes());
+        frame_buf.extend_from_slice(&encoded);
+
+        let err = decode_frame_with_limits(&frame_buf, &custom_limits).unwrap_err();
+        assert_eq!(err, ProtoError::ERR_MAX_DEPTH_EXCEEDED);
     }
 }
