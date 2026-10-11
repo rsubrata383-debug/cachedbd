@@ -90,6 +90,12 @@ impl ProtoError {
     /// Error 1005: Malformed varint encoding (exceeds 10 bytes, overflows 64 bits, or truncated).
     pub const ERR_MALFORMED_VARINT: Self = Self::new(1005, "malformed varint encoding");
 
+    /// Error 1006: Payload decoding failed (truncated item, invalid boolean, or invalid UTF-8).
+    pub const ERR_MALFORMED_PAYLOAD: Self = Self::new(1006, "payload decoding failed");
+
+    /// Error 1007: Unknown payload type tag.
+    pub const ERR_UNKNOWN_TYPE_TAG: Self = Self::new(1007, "unknown type tag");
+
     /// Error 2001: Unknown command or unsupported opcode.
     pub const ERR_UNKNOWN_COMMAND: Self = Self::new(2001, "unknown command");
 }

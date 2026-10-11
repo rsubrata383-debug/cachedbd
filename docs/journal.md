@@ -754,6 +754,7 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   2. *Reserved flag bits 4–7*: `protocol.md` states "Bits 4-7 | 0xF0 | Reserved | Must be set to 0", and `errors.md` explicitly specifies code 1002 (`ERR_UNSUPPORTED_FLAG`) for "Client sets reserved or unsupported flag bit", which encompasses bits 3–7.
   3. *Max payload 64 MB*: Yes, `protocol.md` Section 9 explicitly specifies "Max Frame Size | 64 MB (67,108,864 bytes)".
   4. *Header check order*: The spec lists fields in physical wire sequence (magic, version, flags, request_id, opcode, payload_len), which the decode validation checks sequentially.
+  5. *Canonical varints*: `protocol.md` is silent regarding non-canonical (non-shortest) varints like `0x80 0x00`. The decoder accepts standard LEB128 decodings, but spec v0.2 should clarify if non-minimal encodings must be strictly forbidden.
 - **What Was Added**:
   - `src/proto/varint.rs`:
     - `encode_uvarint(value: u64, out: &mut Vec<u8>)`: Encodes unsigned 64-bit LEB128 varints (up to 10 bytes).
@@ -772,6 +773,35 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
     - Deterministic 1,000-iteration pseudorandom loop round-trip test.
 - **Open Questions**:
   - Should an unknown frame header opcode have a dedicated 1xxx framing error (e.g. 1008 `ERR_UNKNOWN_OPCODE`) rather than reusing 2001 (`ERR_UNKNOWN_COMMAND`) when `spec v0.2` is drafted?
+  - Should non-canonical varint encodings (e.g. `0x80 0x00` representing 0) be explicitly forbidden with `ERR_MALFORMED_VARINT` (1005) in spec v0.2 to prevent canonicalization issues?
+
+---
+
+## 2026-10-11: Week 5 Step 3a: Scalar Items
+
+- **Date**: 2026-10-11
+- **Summary**: Implemented scalar typed binary payload item serialization and deserialization in `src/proto/item.rs`.
+- **What Was Added**:
+  - `Value`: Owned enum supporting scalar variants `Nil`, `Int(i64)`, `Float(f64)`, `Bool(bool)`, `Text(String)`, `Bytes(Vec<u8>)`. (Array, Map, and Error are deferred to Step 3b).
+  - Design note: "Value is owned for now; zero-copy borrowed decoding is a later optimization."
+  - `encode_value(value: &Value, out: &mut Vec<u8>)`: Encodes item tag and payload bytes per Section 4.2.
+  - `decode_value(input: &[u8]) -> Result<(Value, usize), ProtoError>`: Deserializes from a complete payload slice. If bytes run out prematurely, returns `ERR_MALFORMED_PAYLOAD` (`1006`) instead of `NeedMore`, because the frame header already declared complete payload length.
+  - Robust input validation and defense against malicious input:
+    - Never allocates before verifying that the declared string/bytes length does not exceed available buffer bytes.
+    - Avoids wrapping `as` casts using `usize::try_from`.
+    - Preserves exact IEEE-754 bit representations for `Float` (comparing via `to_bits()`), ensuring `-0.0` and `NaN` round trip cleanly.
+    - Strict boolean validation: rejects any byte other than `0x00` / `0x01` with `ERR_MALFORMED_PAYLOAD`.
+    - Strict UTF-8 validation for `Text`.
+    - Returns `ERR_UNKNOWN_TYPE_TAG` (`1007`) on unrecognized type tags.
+  - Comprehensive unit tests:
+    - Round trip across all variants including edge cases (`0`, `1`, `-1`, `i64::MIN`, `i64::MAX`, `0.0`, `-0.0`, `1.5`, `f64::MAX`, `f64::MIN_POSITIVE`, `f64::INFINITY`, `f64::NAN`, empty/long text and bytes).
+    - Exact byte match assertions.
+    - Items from `protocol.md` hex examples (Text "ping", Text "pong", Int 42, Text "put", Text "user").
+    - Error handling on bad inputs (empty, unknown tag `0x7F`, cut varints, 7-byte float, bool `0x02`, invalid UTF-8, declared length > data left, `u64::MAX` length).
+    - Trailing bytes preservation check.
+    - Deterministic 1,000-iteration round-trip loop for pseudorandom Int and Bytes.
+    - Fuzz resilience: 2,000 pseudo-random byte inputs (lengths 0..64) fed to `decode_value` with zero panics.
+
 
 
 
