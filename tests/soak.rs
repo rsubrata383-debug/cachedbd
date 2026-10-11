@@ -501,7 +501,16 @@ fn get_vm_rss_kb() -> Option<u64> {
 fn test_ten_thousand_real_tcp_event_loop_idle_connections() -> Result<(), Box<dyn std::error::Error>>
 {
     const TARGET_CONNECTIONS: usize = 10_000;
-    const BATCH_SIZE: usize = 200;
+    // std::net::TcpListener::bind sets a hardcoded listen backlog limit of 128.
+    // Batch size MUST stay strictly below 128 to ensure the kernel backlog never
+    // overflows and drops incoming SYN packets before the event loop can accept them.
+    const BATCH_SIZE: usize = 100;
+    const {
+        assert!(
+            BATCH_SIZE < 128,
+            "BATCH_SIZE must be strictly less than std's 128 listen backlog limit"
+        );
+    };
 
     let mut event_loop = cachedb::net::event_loop::EventLoop::new()?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -524,10 +533,17 @@ fn test_ten_thousand_real_tcp_event_loop_idle_connections() -> Result<(), Box<dy
     let connect_start = Instant::now();
     let mut clients = Vec::with_capacity(TARGET_CONNECTIONS);
 
-    // Connect 10,000 real clients in batches of 200 to prevent listen backlog overflow.
-    for _ in 0..(TARGET_CONNECTIONS / BATCH_SIZE) {
-        for _ in 0..BATCH_SIZE {
-            let client = TcpStream::connect(addr)?;
+    // Connect 10,000 real clients in batches of 100 to prevent listen backlog overflow.
+    for batch_idx in 0..(TARGET_CONNECTIONS / BATCH_SIZE) {
+        for i in 0..BATCH_SIZE {
+            let client_num = batch_idx * BATCH_SIZE + i;
+            let client =
+                TcpStream::connect_timeout(&addr, Duration::from_secs(5)).map_err(|err| {
+                    io::Error::new(
+                        err.kind(),
+                        format!("Failed to connect client #{client_num} to {addr}: {err}"),
+                    )
+                })?;
             client.set_nonblocking(true)?;
             clients.push(client);
         }

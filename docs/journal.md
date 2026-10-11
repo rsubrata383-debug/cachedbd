@@ -689,6 +689,22 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
     5. Measures elapsed time and memory footprint (VmRSS from `/proc/self/status`): to be measured in CI.
     6. Drops all clients, runs drain ticks until all connections are cleaned up and deregistered from epoll, and verifies that `ConnectionTable` is completely empty.
 
+---
+
+## 2026-10-11: Fix CI Soak Test Timeout — Backlog Overflow and Sequential Test Execution
+
+- **Date**: 2026-10-11
+- **CI Failure & Root Cause**:
+  - The soak test job in GitHub Actions failed after 135 seconds with `Os { code: 110, kind: TimedOut, message: "Connection timed out" }`.
+  - Rust's standard library `TcpListener::bind` sets a hardcoded listen backlog queue of 128 connections. The test attempted to connect 200 clients per batch using blocking `TcpStream::connect` before calling `event_loop.run_once` to accept them. Once client #129 attempted to connect, the kernel listen queue was full and silently dropped incoming SYN packets. The blocking `connect()` call waited ~127 seconds for TCP SYN retransmissions before timing out.
+  - Additionally, Cargo test runs ignored tests concurrently by default. Both 10k connection tests running simultaneously exceeded the 30,000 file descriptor limit.
+- **The Fix**:
+  1. Reduced `BATCH_SIZE` from 200 to 100 with an explicit assertion that `BATCH_SIZE < 128`, guaranteeing the kernel listen backlog never overflows.
+  2. Replaced `TcpStream::connect` with `TcpStream::connect_timeout(&addr, Duration::from_secs(5))` and included the exact client index in error messages, failing fast in 5 seconds rather than minutes if a socket stalls.
+  3. Added `--test-threads=1` to the CI soak test step so 10k tests execute sequentially without competing for file descriptors. Reduced job timeout to 10 minutes.
+- **Note for Later**:
+  - A production database server must support larger listen backlogs than the 128 provided by Rust's standard `TcpListener::bind` (e.g., using `libc::listen` with `SOMAXCONN` / configurable backlog). A future low-level listener helper should live in `src/net/sys.rs`.
+
 
 
 

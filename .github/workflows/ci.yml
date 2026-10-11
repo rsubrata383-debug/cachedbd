@@ -38,7 +38,7 @@ jobs:
   soak:
     name: Real 10k connection test (Linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -51,4 +51,6 @@ jobs:
           ulimit -Hn
           ulimit -n 30000
           ulimit -n
-          cargo test --release --test soak -- --ignored --nocapture
+          # Ignored tests run in parallel by default and share the process file descriptor limit.
+          # Run with --test-threads=1 so each 10k connection test executes sequentially.
+          cargo test --release --test soak -- --ignored --nocapture --test-threads=1
