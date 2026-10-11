@@ -50,7 +50,7 @@ Progress is tracked through the milestone checklist in [`cachedb-roadmap.md`](ca
 | **Phase 0** | **Decisions & Design** | **Completed** | Vision, threading model, and frozen `v0.1` specifications. |
 | **Phase 1** | **Week 3: Networking Basics** | **Completed** | Linux `epoll` syscall wrapper, `EventLoop`, non-blocking echo server. |
 | **Phase 1** | **Week 4: Buffers & Connections** | **Completed** | `ConnectionTable`, flow-control backpressure, 10,000 idle connection scale test. |
-| **Phase 1** | **Week 5: Wire Protocol** | *In Progress* | Binary frame encode/decode, streaming chunk parser, fuzz testing. |
+| **Phase 1** | **Week 5: Wire Protocol** | *Not started* | Binary frame encode/decode, streaming chunk parser, fuzz testing. |
 | **Phase 1** | **Week 6: Hash Table** | *Upcoming* | Custom Robin Hood hash table with incremental background resizing. |
 | **Phase 1** | **Week 7: Core Commands** | *Upcoming* | `ping`, `put`, `fetch`, `drop`, `has`, `size`, `bump`. |
 | **Phase 1** | **Week 8: Tooling & v0.1 Release** | *Upcoming* | CLI shell (`cachedb-cli`), bench tool (`cachedb-bench`), v0.1 release tag. |

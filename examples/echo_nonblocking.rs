@@ -395,7 +395,6 @@ impl NonBlockingEchoServer {
         Ok(())
     }
 
-    /// Removes a client connection and deregisters its descriptor from the event loop.
     /// Sets the maximum read buffer capacity limit for newly accepted client connections.
     pub fn set_max_read_capacity(&mut self, capacity: usize) {
         self.state.connections.set_max_read_capacity(capacity);

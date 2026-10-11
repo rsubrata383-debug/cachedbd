@@ -2,6 +2,7 @@
 name = "cachedb"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 description = "A lightweight caching database"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
@@ -11,14 +12,16 @@ repository = "https://github.com/rsubrata383-debug/cachedbd"
 name = "cachedbd"
 path = "src/main.rs"
 
+[[example]]
+name = "echo_nonblocking"
+test = true
+
 [dependencies]
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [lints.rust]
-# Fail compilation on any warning
-warnings = "deny"
 unsafe_code = "deny"
 missing_docs = "warn"
 rust_2024_compatibility = { level = "warn", priority = -1 }

@@ -651,6 +651,20 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - **Hangup with Unread Data**: In `examples/echo_nonblocking.rs`, if `READABLE` and `HANGUP` arrive simultaneously, available data is processed before terminating the connection.
 - **Non-Linux Epoll Stub Loudness**: Changed `Epoll::create()` on non-Linux to return `io::ErrorKind::Unsupported` explicitly so non-Linux platforms fail loudly rather than silently pretending to poll.
 
+---
+
+## 2026-10-11: Post-Review Fixes — Example Tests Harness, Target Dependencies, and Config
+
+- **Date**: 2026-10-11
+- **Summary**: Addressed post-review findings regarding example test execution, target dependencies, MSRV configuration, and doc comment accuracy.
+- **Changes & Rationale**:
+  - **Example Test Harness**: Discovered that tests written directly inside `examples/echo_nonblocking.rs` were never being executed during default `cargo test` runs because Cargo ignores tests in example files unless explicitly declared with `test = true`. Added `[[example]] name = "echo_nonblocking" test = true` to `Cargo.toml`.
+  - **MSRV & Lints**: Set `rust-version = "1.85"` under `[package]` in `Cargo.toml` and removed `warnings = "deny"` from `[lints.rust]` (as CI already specifies `-D warnings`).
+  - **Unix Target Dependency for libc**: Changed the dependency target from `cfg(target_os = "linux")` to `cfg(unix)` so that `libc` is available for all Unix-family operating systems (including BSD and macOS) where `#[cfg(unix)]` code compiles.
+  - **Doc Comment Correction**: Removed an erroneous duplicate line referencing `remove_client` from the doc comment on `set_max_read_capacity` in `examples/echo_nonblocking.rs`.
+  - **Roadmap Synchronization**: Marked Phase 1 Week 5 as "Not started" in `README.md` to accurately reflect project status before beginning wire protocol implementation.
+
+
 
 
 
