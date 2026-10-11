@@ -723,6 +723,57 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - CI runner numbers can change from run to run. Use them as a rough guide, not an exact promise.
   - The earlier failure (batch of 200 vs listen backlog 128) is fixed. The soak job is now green.
 
+---
+
+## 2026-10-11: Week 5 Step 1: Wire Protocol Header
+
+- **Date**: 2026-10-11
+- **Summary**: Implemented the fixed 14-byte wire protocol frame header (`src/proto/header.rs`), error type `ProtoError`, `Opcode`, `DecodedHeader`, and round-trip / boundary unit tests validating all 8 hex examples from `docs/spec/protocol.md`.
+- **What Was Added**:
+  - `Header`: 14-byte frame header (`magic: [u8; 2] = [0xCA, 0xDB]`, `version = 1`, `flags: u8`, `request_id: u32`, `opcode: Opcode`, `payload_len: u32`).
+  - `Opcode`: Wire frame opcodes (`Hello = 0x0001`, `Command = 0x0002`, `Push = 0x0003`). Unknown raw opcode converts to error 2001 (`ERR_UNKNOWN_COMMAND`).
+  - `ProtoError`: Initial protocol error container holding numeric codes and messages matching `docs/spec/errors.md` (1001, 1002, 1003, 1004, 2001).
+  - `DecodedHeader`: Enum distinguishing `NeedMore` (< 14 bytes) from `Complete(Header)`.
+  - Comprehensive unit tests:
+    - Round-trip encode/decode equality.
+    - All 8 hex examples from `protocol.md` decoded byte-for-byte.
+    - Partial header inputs (0, 1, 13 bytes) return `NeedMore`.
+    - Error code validation: 1004 (invalid magic), 1001 (unsupported version), 1002 (reserved flags such as `FLAG_MORE_FRAMES`), 1003 (payload > 64 MB), 2001 (unknown opcode).
+    - Payload boundary tests: exact 64 MB accepted, 64 MB + 1 rejected.
+- **Spec Observations & Clarifications**:
+  - In `docs/spec/protocol.md`, the 14-byte frame header opcode is a 2-byte field with values `0x0001` (HELLO), `0x0002` (COMMAND), and `0x0003` (PUSH). Specific commands (`ping`, `put`, `fetch`, etc.) are verbs transmitted inside the Array payload of a `COMMAND` frame, not separate wire frame header opcodes.
+  - Initialized `ProtoError` with codes from `docs/spec/errors.md` since they were not previously implemented in `src/`.
+
+---
+
+## 2026-10-11: Week 5 Step 2: Varint Encoding and Decoding
+
+- **Date**: 2026-10-11
+- **Part A Check Findings**:
+  1. *Unknown frame opcode error code*: `docs/spec/errors.md` does not specify a 1xxx protocol framing code for unknown frame opcodes (codes 1001–1007 cover version, flags, frame size, magic, varint, payload, and type tag). We keep 2001 (`ERR_UNKNOWN_COMMAND`) and note under Open Questions whether a 1xxx code should be assigned in future spec revisions.
+  2. *Reserved flag bits 4–7*: `protocol.md` states "Bits 4-7 | 0xF0 | Reserved | Must be set to 0", and `errors.md` explicitly specifies code 1002 (`ERR_UNSUPPORTED_FLAG`) for "Client sets reserved or unsupported flag bit", which encompasses bits 3–7.
+  3. *Max payload 64 MB*: Yes, `protocol.md` Section 9 explicitly specifies "Max Frame Size | 64 MB (67,108,864 bytes)".
+  4. *Header check order*: The spec lists fields in physical wire sequence (magic, version, flags, request_id, opcode, payload_len), which the decode validation checks sequentially.
+- **What Was Added**:
+  - `src/proto/varint.rs`:
+    - `encode_uvarint(value: u64, out: &mut Vec<u8>)`: Encodes unsigned 64-bit LEB128 varints (up to 10 bytes).
+    - `decode_uvarint(input: &[u8]) -> Result<Decoded<(u64, usize)>, ProtoError>`: Decodes LEB128 varints, returns `Decoded::NeedMore` on truncated streams, and returns error 1005 (`ERR_MALFORMED_VARINT`) on 64-bit overflows or length > 10 bytes.
+    - `zigzag_encode(n: i64) -> u64` and `zigzag_decode(n: u64) -> i64`: Exact Zigzag mappings per Section 4.1.
+    - `encode_ivarint(value: i64, out: &mut Vec<u8>)` and `decode_ivarint(input: &[u8]) -> Result<Decoded<(i64, usize)>, ProtoError>`.
+  - Reused generic `Decoded<T>` in `src/proto/mod.rs` across headers and varints.
+  - Comprehensive unit tests:
+    - Round trip across critical values (0, 1, 127, 128, 255, 16383, 16384, u32::MAX, u64::MAX, and negative/extreme i64 values).
+    - Exact byte assertions for 0, 127, 128, 300, u64::MAX.
+    - Truncated and empty inputs return `NeedMore`.
+    - Overflow / >10 bytes returns error 1005.
+    - Standard LEB128 non-canonical encodings (`0x80 0x00`) decode properly to 0.
+    - Extra bytes after varint are preserved.
+    - Verified against varint encodings in hex examples (2001 -> `D1 0F`, zigzag 42 -> `54`, 1002 -> `EA 07`).
+    - Deterministic 1,000-iteration pseudorandom loop round-trip test.
+- **Open Questions**:
+  - Should an unknown frame header opcode have a dedicated 1xxx framing error (e.g. 1008 `ERR_UNKNOWN_OPCODE`) rather than reusing 2001 (`ERR_UNKNOWN_COMMAND`) when `spec v0.2` is drafted?
+
+
 
 
 
