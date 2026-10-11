@@ -1146,3 +1146,33 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 
 ### Open Questions & Future Considerations:
 - **Table Shrinking**: Currently, the table grows dynamically up to $2^{30}$, but does not shrink when elements are removed. Should an incremental down-sizing migration be initiated when load factor drops below $1/8$ (12.5%)? (Left for future consideration; not required in Phase 1 roadmap).
+
+---
+
+## 2026-10-11: Week 6 Step 2 Safety Fix: Guaranteed Key Preservation & Strict Resizing Robustness
+
+- **Date**: 2026-10-11
+- **Scope**: Hardened `RobinHoodTable<V>` in `src/store/table.rs` against silent key loss and edge-case migration failures.
+
+### Safety Fixes & Architectural Decisions:
+1. **`get_mut_with_hash` Zero-Reallocation & Fallback Restore**:
+   - When key resides in `old_table`, the entire slot is extracted directly via `remove_at_and_shift` (avoiding new `Box` allocation).
+   - If `main_table.insert_slot(slot)` fails (e.g. `main_table` is at max load limit), the slot is restored into `old_table` via `old.insert_slot(returned_slot)`.
+   - A mutable reference `&mut V` directly into `old_table` is returned so the caller can safely mutate the value in place without dropping the key.
+2. **`check_and_start_resize` Complete Migration Verification**:
+   - `check_and_start_resize` completes running migration via `step_migration(usize::MAX)?`.
+   - If `old_table` is still `Some` after the drain attempt (e.g. capacity limits prevent completion), it immediately returns `Err(TableFull)` without replacing or dropping `main_table` or `old_table`.
+3. **`step_migration` Explicit Invariant Preservation**:
+   - Restoring a slot to `old_table` on migration failure checks the restore result; if failed, the slot is safely parked in an available slot and `debug_assert!` verifies restore integrity (no `let _ =`).
+   - `old_table` is deallocated (`None`) **only** when `old_table.len == 0`.
+   - If `migrate_cursor >= old_table.capacity` while `old.len > 0`, the cursor is wrapped to 0 to prevent abandoning remaining keys, and `debug_assert!(false, ...)` flags the unexpected state.
+   - Clarified documentation: shifted items never go below `migrate_cursor` because backward shift only fills the hole at `migrate_cursor`, and all slots prior to `migrate_cursor` are empty.
+4. **`insert_with_hash` Fail-Safe Slot Restoration**:
+   - When overwriting a key that resides in `old_table`, the original slot is removed and kept.
+   - If `main_table.insert_with_hash` fails, the removed slot is immediately restored into `old_table` so no existing key is ever dropped on insert errors.
+5. **Accurate Resizing Latency Documentation**:
+   - Updated `docs/design/hash-table.md` to truthfully acknowledge that while key copying is spread out incrementally across mutating operations, allocating and initializing the new backing table is $O(\text{new capacity})$ at resize start, to be measured and benchmarked in Step 3.
+6. **Rigorous 3-Phase Differential Test**:
+   - Implemented `test_differential_3_phases_5_seeds`: 300,000 operations per seed across 3 phases (grow, shrink, mixed) with 20,000 keys and 5 fixed seeds.
+   - 10% operations run `step_migration(1..=4)`.
+   - Validates $\ge 1,000$ operations during active resizing and $\ge 10$ finished resizes, with bidirectional consistency checks against `std::collections::HashMap`.

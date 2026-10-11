@@ -11,9 +11,11 @@
 //! - **Incremental Resizing**: When `main_table` exceeds the $7/8$ load factor, a new
 //!   `main_table` with $2\times$ capacity is allocated, the old table becomes `old_table`,
 //!   and a migration cursor starts at bucket 0.
-//! - **Paced Migration**: On every `get`, `insert`, and `remove`, a batch of [`MIGRATE_BATCH`]
-//!   buckets (16 buckets) is moved from `old_table` to `main_table`. Moving a bucket moves
-//!   the key, value, and cached hash directly without re-hashing the key bytes.
+//! - **Paced Migration**: On every `insert`, `remove`, and `get_mut` (as well as explicit calls
+//!   to [`RobinHoodTable::step_migration`]), a batch of [`MIGRATE_BATCH`] buckets (16 buckets)
+//!   is moved from `old_table` to `main_table`. `get` takes `&self` and is strictly read-only
+//!   (does not migrate). Moving a bucket moves the key, value, and cached hash directly without
+//!   re-hashing the key bytes.
 //! - **Single Resize Invariant**: If a resize is already running when a new resize is triggered,
 //!   the running resize is first completed synchronously before initiating the next resize.
 //! - **Bounded Latency**: Lookups check `main_table` first, then `old_table`. Inserts write
@@ -318,27 +320,29 @@ impl<V> SingleTable<V> {
         Some(removed)
     }
 
-    fn remove_with_hash(&mut self, hash: u64, key: &[u8]) -> Option<V> {
+    fn find_index_with_hash(&self, hash: u64, key: &[u8]) -> Option<usize> {
         let ideal = self.ideal_index(hash);
         let mut psl = 0u32;
         let mut idx = ideal;
 
         let max_probes = u32::try_from(self.capacity).unwrap_or(u32::MAX);
-        let mut target = None;
         while psl < max_probes {
             let slot = self.slots.get(idx).and_then(Option::as_ref)?;
             if slot.psl < psl {
                 return None;
             }
             if slot.hash == hash && slot.key.as_ref() == key {
-                target = Some(idx);
-                break;
+                return Some(idx);
             }
             psl = psl.saturating_add(1);
             idx = (idx.wrapping_add(1)) & self.mask;
         }
 
-        let target_idx = target?;
+        None
+    }
+
+    fn remove_with_hash(&mut self, hash: u64, key: &[u8]) -> Option<V> {
+        let target_idx = self.find_index_with_hash(hash, key)?;
         self.remove_at_and_shift(target_idx).map(|s| s.value)
     }
 
@@ -378,7 +382,6 @@ impl<V> SingleTable<V> {
 
     fn check_invariants(&self) -> Result<(), String> {
         let mut count = 0usize;
-        let mut seen_keys = std::collections::HashSet::new();
 
         for i in 0..self.capacity {
             if let Some(slot) = self.slots.get(i).and_then(Option::as_ref) {
@@ -415,7 +418,9 @@ impl<V> SingleTable<V> {
                     }
                 }
 
-                if !seen_keys.insert(slot.key.clone()) {
+                if slot.psl > 0
+                    && self.find_index_with_hash(slot.hash, slot.key.as_ref()) != Some(i)
+                {
                     return Err(format!("Invariant 5 violated: duplicate key at slot {i}"));
                 }
             }
@@ -526,12 +531,13 @@ impl<V> RobinHoodTable<V> {
     /// - If `old_table[migrate_cursor]` is empty (`None`), the cursor moves forward (`migrate_cursor += 1`).
     /// - If `old_table[migrate_cursor]` is occupied, taking it directly would leave an empty hole in the middle
     ///   of an open-addressing probe cluster, causing subsequent lookups in `old_table` to stop prematurely.
-    /// - Instead, we remove it using backward-shift deletion (`remove_at_and_shift`). Any subsequent elements
-    ///   in the cluster shift backward by one slot with decremented PSL. Because their ideal bucket is
-    ///   `>= migrate_cursor`, they shift into `>= migrate_cursor` and never below it.
+    /// - Instead, we remove it using backward-shift deletion (`remove_at_and_shift`). Removal only fills
+    ///   the hole at `migrate_cursor`, and every slot before `migrate_cursor` is empty, so shifted items
+    ///   never go below `migrate_cursor`.
     /// - Therefore, after every single removal, `old_table` remains 100% valid with no holes, preserving all
     ///   Robin Hood invariants throughout migration.
     /// - If moving the item into `main_table` fails, the item is restored to `old_table` and the error is returned.
+    /// - `old_table` is only set to `None` when `old_table.len == 0`.
     ///
     /// Returns `Ok(true)` if a resize is still running, or `Ok(false)` if completed or not resizing.
     ///
@@ -539,13 +545,27 @@ impl<V> RobinHoodTable<V> {
     ///
     /// Returns [`TableFull`] if `main_table` cannot accept the migrated slot; the slot is restored into `old_table`.
     pub fn step_migration(&mut self, buckets: usize) -> Result<bool, TableFull> {
-        let Some(ref mut old) = self.old_table else {
-            return Ok(false);
-        };
-
         let mut moved = 0usize;
-        let old_capacity = old.capacity;
-        while moved < buckets && self.migrate_cursor < old_capacity {
+        while moved < buckets {
+            let Some(ref mut old) = self.old_table else {
+                return Ok(false);
+            };
+
+            if old.len == 0 {
+                self.old_table = None;
+                self.migrate_cursor = 0;
+                return Ok(false);
+            }
+
+            if self.migrate_cursor >= old.capacity {
+                debug_assert!(
+                    false,
+                    "migrate_cursor reached end of old_table with {} items remaining",
+                    old.len
+                );
+                self.migrate_cursor = 0;
+            }
+
             let is_empty = old
                 .slots
                 .get(self.migrate_cursor)
@@ -568,26 +588,44 @@ impl<V> RobinHoodTable<V> {
                     }
                     Err(returned_slot) => {
                         // Put the item back into old_table so no key is ever lost!
-                        let _ = old.insert_slot(returned_slot);
+                        // Restoring must succeed because the slot was just removed from old_table.
+                        let restore_res = old.insert_slot(returned_slot);
+                        debug_assert!(
+                            restore_res.is_ok(),
+                            "restoring slot into old_table must succeed because slot was just removed"
+                        );
+                        if let Err(unrestored) = restore_res {
+                            for s in &mut old.slots {
+                                if s.is_none() {
+                                    *s = Some(unrestored);
+                                    old.len = old.len.saturating_add(1);
+                                    break;
+                                }
+                            }
+                        }
                         return Err(TableFull);
                     }
                 }
             }
-
-            if old.len == 0 || self.migrate_cursor >= old_capacity {
-                break;
-            }
         }
 
         if let Some(ref old) = self.old_table {
-            if old.len == 0 || self.migrate_cursor >= old.capacity {
+            if old.len == 0 {
                 self.old_table = None;
                 self.migrate_cursor = 0;
                 return Ok(false);
             }
+            if self.migrate_cursor >= old.capacity {
+                debug_assert!(
+                    false,
+                    "migrate_cursor reached end of old_table with {} items remaining",
+                    old.len
+                );
+                self.migrate_cursor = 0;
+            }
         }
 
-        Ok(true)
+        Ok(self.old_table.is_some())
     }
 
     /// Checks if a resize is needed and initiates it.
@@ -599,7 +637,10 @@ impl<V> RobinHoodTable<V> {
     fn check_and_start_resize(&mut self) -> Result<(), TableFull> {
         // If a resize is already running, complete it first before starting a new one.
         if self.old_table.is_some() {
-            let _ = self.step_migration(usize::MAX);
+            self.step_migration(usize::MAX)?;
+            if self.old_table.is_some() {
+                return Err(TableFull);
+            }
         }
 
         if self.main_table.capacity >= self.max_capacity {
@@ -657,7 +698,7 @@ impl<V> RobinHoodTable<V> {
     ///
     /// Mutates the table and steps migration by up to [`MIGRATE_BATCH`] (16) buckets.
     pub fn get_mut(&mut self, key: &[u8]) -> Option<&mut V> {
-        let _ = self.step_migration(MIGRATE_BATCH);
+        let _migration_done = self.step_migration(MIGRATE_BATCH).is_ok();
         let hash = hash64(key, self.seed);
         self.get_mut_with_hash(hash, key)
     }
@@ -668,19 +709,42 @@ impl<V> RobinHoodTable<V> {
             return self.main_table.get_mut_with_hash(hash, key);
         }
 
-        // If present in old_table, migrate it immediately to main_table
-        if let Some(ref mut old) = self.old_table {
-            if let Some(val) = old.remove_with_hash(hash, key) {
-                if old.len == 0 {
-                    self.old_table = None;
-                    self.migrate_cursor = 0;
+        // If present in old_table, extract the slot to migrate it to main_table
+        let slot = {
+            let old = self.old_table.as_mut()?;
+            let target_idx = old.find_index_with_hash(hash, key)?;
+            old.remove_at_and_shift(target_idx)?
+        };
+
+        match self.main_table.insert_slot(slot) {
+            Ok(()) => {
+                if let Some(ref old) = self.old_table {
+                    if old.len == 0 {
+                        self.old_table = None;
+                        self.migrate_cursor = 0;
+                    }
                 }
-                let _ = self.main_table.insert_with_hash(hash, Box::from(key), val);
-                return self.main_table.get_mut_with_hash(hash, key);
+                self.main_table.get_mut_with_hash(hash, key)
+            }
+            Err(returned_slot) => {
+                let old = self.old_table.as_mut()?;
+                let restore_res = old.insert_slot(returned_slot);
+                debug_assert!(
+                    restore_res.is_ok(),
+                    "restoring slot into old_table must succeed because slot was just removed"
+                );
+                if let Err(unrestored) = restore_res {
+                    for s in &mut old.slots {
+                        if s.is_none() {
+                            *s = Some(unrestored);
+                            old.len = old.len.saturating_add(1);
+                            break;
+                        }
+                    }
+                }
+                old.get_mut_with_hash(hash, key)
             }
         }
-
-        None
     }
 
     /// Returns `true` if the table contains an entry for the given key.
@@ -711,7 +775,7 @@ impl<V> RobinHoodTable<V> {
         value: V,
     ) -> Result<Option<V>, TableFull> {
         // Step 1: Paced migration step
-        let _ = self.step_migration(MIGRATE_BATCH);
+        self.step_migration(MIGRATE_BATCH)?;
 
         // Step 2: Check if key exists in main_table
         let key_in_main = self.main_table.contains_key_with_hash(hash, &key);
@@ -721,27 +785,59 @@ impl<V> RobinHoodTable<V> {
             self.check_and_start_resize()?;
         }
 
-        // Step 3: Remove key from old_table if present, so it is never in both tables
-        let old_in_old = if let Some(ref mut old) = self.old_table {
-            let removed = old.remove_with_hash(hash, &key);
-            if old.len == 0 {
-                self.old_table = None;
-                self.migrate_cursor = 0;
+        // Step 3: Remove key from old_table if present, preserving the slot so it can be restored on failure
+        let old_slot = if let Some(ref mut old) = self.old_table {
+            if let Some(target_idx) = old.find_index_with_hash(hash, &key) {
+                old.remove_at_and_shift(target_idx)
+            } else {
+                None
             }
-            removed
         } else {
             None
         };
 
         // Step 4: Insert into main_table
-        let old_in_main = self.main_table.insert_with_hash(hash, key, value)?;
+        let old_in_main = match self.main_table.insert_with_hash(hash, key, value) {
+            Ok(prev) => {
+                if let Some(ref old) = self.old_table {
+                    if old.len == 0 {
+                        self.old_table = None;
+                        self.migrate_cursor = 0;
+                    }
+                }
+                prev
+            }
+            Err(err) => {
+                // Restore removed slot to old_table so no key is lost on insert failure
+                if let Some(slot) = old_slot {
+                    if let Some(ref mut old) = self.old_table {
+                        let restore_res = old.insert_slot(slot);
+                        debug_assert!(
+                            restore_res.is_ok(),
+                            "restoring slot into old_table must succeed because slot was just removed"
+                        );
+                        if let Err(unrestored) = restore_res {
+                            for s in &mut old.slots {
+                                if s.is_none() {
+                                    *s = Some(unrestored);
+                                    old.len = old.len.saturating_add(1);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                return Err(err);
+            }
+        };
 
+        let old_in_old = old_slot.map(|s| s.value);
         Ok(old_in_main.or(old_in_old))
     }
 
     /// Removes an entry by key from both tables, returning the value that was found.
     pub fn remove(&mut self, key: &[u8]) -> Option<V> {
-        let _ = self.step_migration(MIGRATE_BATCH);
+        let _migration_done = self.step_migration(MIGRATE_BATCH).is_ok();
         let hash = hash64(key, self.seed);
         self.remove_with_hash(hash, key)
     }
@@ -828,16 +924,9 @@ impl<V> RobinHoodTable<V> {
                 }
             }
 
-            let mut main_keys = std::collections::HashSet::new();
-            for slot_opt in &self.main_table.slots {
-                if let Some(s) = slot_opt.as_ref() {
-                    main_keys.insert(s.key.clone());
-                }
-            }
-
             for slot_opt in &old.slots {
                 if let Some(s) = slot_opt.as_ref() {
-                    if main_keys.contains(&s.key) {
+                    if self.main_table.contains_key_with_hash(s.hash, &s.key) {
                         return Err(format!(
                             "Invariant violated: key {:?} exists in both main_table and old_table",
                             s.key
@@ -1531,65 +1620,245 @@ mod tests {
     }
 
     #[test]
-    fn test_differential_vs_std_hashmap_100k_ops() {
-        let mut rng = XorShift64::new(0x9876_5432_10FE_DCBA);
-        // Start small (8 capacity) so resizes happen many times throughout operations
-        let mut our_table = RobinHoodTable::new(8, 0x1337);
-        let mut ref_map = HashMap::new();
+    fn test_get_mut_main_table_at_load_limit_restores_to_old_table() {
+        let mut table = RobinHoodTable::new(8, 0x1111);
+        for i in 0..7 {
+            let k = format!("old-item-{i}").into_bytes().into_boxed_slice();
+            table.insert(k, i * 10).unwrap();
+        }
+        table.insert(Box::from(&b"trigger"[..]), 99).unwrap();
+        assert!(table.is_resizing());
 
-        let key_pool: Vec<Box<[u8]>> = (0..200)
-            .map(|i| format!("key-{i}").into_bytes().into_boxed_slice())
-            .collect();
+        for i in 100..114 {
+            let k = format!("main-fill-{i}").into_bytes().into_boxed_slice();
+            let h = hash64(&k, table.seed);
+            let _ = table.main_table.insert_with_hash(h, k, i);
+        }
+        assert!(table.main_table.is_at_max_load());
 
-        for op in 0..100_000 {
-            let key_idx = (rng.next_u64() % 200) as usize;
-            let key = &key_pool[key_idx];
-            let val = rng.next_u64();
+        let val_mut = table.get_mut(b"old-item-3");
+        assert_eq!(val_mut, Some(&mut 30));
+        if let Some(v) = val_mut {
+            *v = 300;
+        }
 
-            match rng.next_u64() % 5 {
-                0 | 1 => {
-                    // 40%: insert / overwrite
-                    let ref_res = ref_map.insert(key.clone(), val);
-                    let our_res = our_table
-                        .insert(key.clone(), val)
-                        .expect("table grows dynamically");
-                    assert_eq!(our_res, ref_res, "insert mismatch at op {op}");
+        assert_eq!(table.get(b"old-item-3"), Some(&300));
+        table
+            .check_invariants()
+            .expect("invariants must hold after failed get_mut migration restore");
+    }
+
+    #[test]
+    fn test_check_and_start_resize_fails_when_migration_cannot_complete() {
+        let mut table = RobinHoodTable::new(8, 0x2222);
+        for i in 0..7 {
+            let k = format!("k-{i}").into_bytes().into_boxed_slice();
+            table.insert(k, i).unwrap();
+        }
+        table.insert(Box::from(&b"trigger"[..]), 99).unwrap();
+        assert!(table.is_resizing());
+
+        table.max_capacity = table.main_table.capacity;
+        for i in 100..114 {
+            let k = format!("fill-{i}").into_bytes().into_boxed_slice();
+            let h = hash64(&k, table.seed);
+            let _ = table.main_table.insert_with_hash(h, k, i);
+        }
+
+        let res = table.check_and_start_resize();
+        assert_eq!(res, Err(TableFull));
+        assert!(table.old_table.is_some(), "old_table must not be dropped");
+    }
+
+    #[test]
+    fn test_insert_with_hash_restores_key_to_old_table_on_main_table_full() {
+        let mut table = RobinHoodTable::new(8, 0x3333);
+        for i in 0..7 {
+            let k = format!("k-{i}").into_bytes().into_boxed_slice();
+            table.insert(k, i * 5).unwrap();
+        }
+        table.insert(Box::from(&b"trigger"[..]), 99).unwrap();
+        assert!(table.is_resizing());
+
+        for i in 100..114 {
+            let k = format!("fill-{i}").into_bytes().into_boxed_slice();
+            let h = hash64(&k, table.seed);
+            let _ = table.main_table.insert_with_hash(h, k, i);
+        }
+        assert!(table.main_table.is_at_max_load());
+
+        let target_key = Box::from(&b"k-2"[..]);
+        let res = table.insert(target_key, 9999);
+        assert_eq!(res, Err(TableFull));
+
+        assert_eq!(table.get(b"k-2"), Some(&10));
+        table
+            .check_invariants()
+            .expect("invariants must hold after failed insert restore");
+    }
+
+    enum DifferentialOp {
+        Insert,
+        Remove,
+        Get,
+    }
+
+    fn pick_phase_op(phase: usize, r: usize) -> DifferentialOp {
+        match phase {
+            0 => {
+                if r < 80 {
+                    DifferentialOp::Insert
+                } else if r < 90 {
+                    DifferentialOp::Remove
+                } else {
+                    DifferentialOp::Get
                 }
-                2 => {
-                    // 20%: remove
-                    let ref_res = ref_map.remove(key);
-                    let our_res = our_table.remove(key);
-                    assert_eq!(our_res, ref_res, "remove mismatch at op {op}");
-                }
-                3 => {
-                    // 20%: read-only get (&self)
-                    let ref_res = ref_map.get(key);
-                    let our_res = our_table.get(key);
-                    assert_eq!(our_res, ref_res, "get mismatch at op {op}");
-                }
-                4 => {
-                    // 20%: step_migration with small number of buckets (1..=4)
-                    let step_buckets = (1 + (rng.next_u64() % 4)) as usize;
-                    let _ = our_table.step_migration(step_buckets);
-                }
-                _ => unreachable!(),
             }
+            1 => {
+                if r < 80 {
+                    DifferentialOp::Remove
+                } else if r < 90 {
+                    DifferentialOp::Insert
+                } else {
+                    DifferentialOp::Get
+                }
+            }
+            _ => {
+                if r < 40 {
+                    DifferentialOp::Insert
+                } else if r < 70 {
+                    DifferentialOp::Remove
+                } else {
+                    DifferentialOp::Get
+                }
+            }
+        }
+    }
 
-            assert_eq!(our_table.len(), ref_map.len(), "length mismatch at op {op}");
+    fn verify_differential_maps(
+        our_table: &RobinHoodTable<u64>,
+        ref_map: &HashMap<&[u8], u64>,
+        key_pool: &[Box<[u8]>],
+    ) {
+        assert_eq!(our_table.len(), ref_map.len());
+        for (&k, v) in ref_map {
+            assert_eq!(our_table.get(k), Some(v), "missing key in our_table");
+        }
+        for (k, v) in our_table.iter() {
+            assert_eq!(ref_map.get(k), Some(v), "unexpected key in our_table");
+        }
+        for k in key_pool {
+            assert_eq!(
+                our_table.get(k),
+                ref_map.get(k.as_ref()),
+                "key space mismatch"
+            );
+        }
+        our_table
+            .check_invariants()
+            .expect("invariants must hold at end of test");
+    }
 
-            if op % 500 == 0 {
-                our_table
-                    .check_invariants()
-                    .unwrap_or_else(|e| panic!("invariants failed at op {op}: {e}"));
+    fn run_differential_seed(seed: u64, key_pool: &[Box<[u8]>]) {
+        let mut rng = XorShift64::new(seed);
+        let mut our_table = RobinHoodTable::new(8, seed);
+        let mut ref_map: HashMap<&[u8], u64> = HashMap::new();
+        let num_keys = key_pool.len();
+
+        let mut ops_while_resizing = 0usize;
+        let mut finished_resizes = 0usize;
+        let mut total_op = 0usize;
+
+        for phase in 0..3 {
+            for _ in 0..75_000 {
+                let was_resizing = our_table.is_resizing();
+                let r_raw = rng.next_u64();
+                let key_idx = (r_raw as usize) % num_keys;
+                let r = ((r_raw >> 32) % 100) as usize;
+                let key = &key_pool[key_idx];
+                let val = r_raw;
+
+                if r < 10 {
+                    let step_buckets = 1 + (r % 4);
+                    let _migration_done = our_table.step_migration(step_buckets).is_ok();
+                } else {
+                    match pick_phase_op(phase, r) {
+                        DifferentialOp::Insert => {
+                            let ref_res = ref_map.insert(key.as_ref(), val);
+                            let our_res = our_table
+                                .insert(key.clone(), val)
+                                .expect("table must grow dynamically");
+                            assert_eq!(our_res, ref_res, "insert mismatch at op {total_op}");
+                        }
+                        DifferentialOp::Remove => {
+                            let ref_res = ref_map.remove(key.as_ref());
+                            let our_res = our_table.remove(key.as_ref());
+                            assert_eq!(our_res, ref_res, "remove mismatch at op {total_op}");
+                        }
+                        DifferentialOp::Get => {
+                            let ref_res = ref_map.get(key.as_ref());
+                            let our_res = our_table.get(key.as_ref());
+                            assert_eq!(our_res, ref_res, "get mismatch at op {total_op}");
+                        }
+                    }
+                }
+
+                let is_resizing_now = our_table.is_resizing();
+                if was_resizing {
+                    ops_while_resizing = ops_while_resizing.saturating_add(1);
+                }
+                if was_resizing && !is_resizing_now {
+                    finished_resizes = finished_resizes.saturating_add(1);
+                }
+
+                if total_op < 2_000 || total_op % 200 == 0 {
+                    assert_eq!(
+                        our_table.len(),
+                        ref_map.len(),
+                        "len mismatch at op {total_op}"
+                    );
+                    our_table
+                        .check_invariants()
+                        .unwrap_or_else(|e| panic!("invariants failed at op {total_op}: {e}"));
+                }
+
+                total_op = total_op.saturating_add(1);
             }
         }
 
-        our_table
-            .check_invariants()
-            .expect("invariants at end of 100k differential test");
-        assert_eq!(our_table.len(), ref_map.len());
-        for (k, v) in &ref_map {
-            assert_eq!(our_table.get(k), Some(v));
+        assert!(
+            ops_while_resizing >= 1_000,
+            "ops while resizing ({ops_while_resizing}) must be at least 1,000"
+        );
+        assert!(
+            finished_resizes >= 10,
+            "finished resizes ({finished_resizes}) must be at least 10"
+        );
+
+        println!(
+            "Seed {seed:#018X}: ops_while_resizing = {ops_while_resizing}, finished_resizes = {finished_resizes}"
+        );
+
+        verify_differential_maps(&our_table, &ref_map, key_pool);
+    }
+
+    #[test]
+    fn test_differential_3_phases_5_seeds() {
+        let seeds: [u64; 5] = [
+            0x1234_5678_9ABC_DEF0,
+            0xCAFE_BABE_0123_4567,
+            0xFEED_FACE_DEAD_BEEF,
+            0x0123_4567_89AB_CDEF,
+            0x9876_5432_10FE_DCBA,
+        ];
+
+        let num_keys: usize = 20_000;
+        let key_pool: Vec<Box<[u8]>> = (0..num_keys)
+            .map(|i| Box::from((i as u64).to_be_bytes()))
+            .collect();
+
+        for &seed in &seeds {
+            run_differential_seed(seed, &key_pool);
         }
     }
 

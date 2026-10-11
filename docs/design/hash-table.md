@@ -86,7 +86,7 @@ The implementation enforces and validates core invariants (`check_invariants()`)
 ## 8. Incremental Resizing Architecture (Step 2)
 
 ### 8.1 Why Incremental Resizing?
-In an in-memory database targeting a strict $< 1\text{ ms}$ p99 latency SLA and 200k ops/sec throughput, stop-the-world reallocation is unacceptable. Reallocating and copying a hash table with 10M keys can pause execution for 50–200 ms. Incremental resizing spreads migration work over mutating operations, bounding latency and ensuring zero stop-the-world stalls.
+In an in-memory database targeting a strict $< 1\text{ ms}$ p99 latency SLA and 200k ops/sec throughput, stop-the-world reallocation is unacceptable. Reallocating and copying a hash table with 10M keys can pause execution for 50–200 ms. Incremental resizing spreads key copying work over mutating operations, bounding latency. However, while key migration is spread out incrementally, allocating and initializing the new backing table is $O(\text{new capacity})$ at the start of a resize; this allocation cost will be measured and benchmarked in Step 3.
 
 ### 8.2 Dual-Table Structure
 - `main_table: SingleTable<V>`: The primary active table receiving new insertions.
@@ -102,11 +102,11 @@ In an in-memory database targeting a strict $< 1\text{ ms}$ p99 latency SLA and 
 2. **Paced Incremental Migration**:
    - Mutating operations (`insert`, `remove`, `get_mut`) and periodic event-loop calls (`step_migration`) migrate up to `MIGRATE_BATCH = 16` buckets from `old_table`.
    - Read-only lookups (`get(&self)`) **do not migrate** and remain cheap and shareable.
-   - **Hole-Free Migration via Backward-Shift**: If `old_table[migrate_cursor]` is empty, the cursor advances. If it is occupied, it is removed using backward-shift deletion (`remove_at_and_shift`). Any subsequent cluster entries shift backward into $\ge \text{migrate\_cursor}$ with decremented PSL. No holes are created in `old_table`, ensuring lookups in `old_table` remain fully valid at every step.
+   - **Hole-Free Migration via Backward-Shift**: If `old_table[migrate_cursor]` is empty, the cursor advances. If it is occupied, it is removed using backward-shift deletion (`remove_at_and_shift`). Removal only fills the hole at `migrate_cursor`, and every slot before `migrate_cursor` is empty, so shifted items never go below `migrate_cursor`. No holes are created in `old_table`, ensuring lookups in `old_table` remain fully valid at every step.
    - **Key Preservation**: If inserting into `main_table` returns an error, the item is restored into `old_table` so keys are never lost.
    - Keys are **never re-hashed** during migration; cached 64-bit hashes are directly transferred.
 3. **Completion**:
-   - When `migrate_cursor >= old_table.capacity` or `old_table.len == 0`, `old_table` is deallocated (`None`) and `migrate_cursor` is reset to 0.
+   - When `old_table.len == 0`, `old_table` is deallocated (`None`) and `migrate_cursor` is reset to 0.
    - Resizing can also be stepped manually or finished in one shot via `table.step_migration(usize::MAX)`.
 
 ### 8.4 Operation Rules
