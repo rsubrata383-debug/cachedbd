@@ -1016,6 +1016,37 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
     - If framing corruption occurs before header completion (e.g. `1004` invalid magic `0xCA 0xDB`): close the TCP connection immediately with no reply.
   - **Application Errors (2xxx)**: send error frame (`flags = 0x03`) and keep the connection open.
 
+---
 
+## 2026-10-11: CI Fix: Formatting and Line Endings & Spec Clarifications
 
+- **Date**: 2026-10-11
+- **CI Fix**:
+  - `src/proto/limits.rs`: Removed duplicate blank lines at the end of the file that triggered `cargo fmt --check` failure on Linux CI.
+  - Checked line endings of all 58 files across `src/`, `tests/`, `examples/`, `fuzz/`, and `.github/`: all files already consistently use LF (0 CRLF, 0 mixed).
+  - Added repository-wide `.gitattributes` enforcing `eol=lf` on `*.rs`, `*.toml`, `*.md`, `*.yml`, `*.yaml`, `*.js`, `*.lock`, and `binary` on `*.bin`.
+- **Correction on Fatal Framing Errors (Codes 1001–1007)**:
+  - *Correction of earlier Step 6 Part E statement*: The earlier answer stated that for 1001–1007, the server closes without reply, and erroneously described 1005 as a "broken header" where the server might send an error frame.
+  - *Facts from frozen specifications*:
+    1. Error 1005 (`ERR_MALFORMED_VARINT`) has **nothing** to do with the header. The 14-byte wire header has no varints at all (all header fields are fixed-width big-endian integers). Varints only appear in the payload.
+    2. Codes that happen after the 14-byte header has been read successfully (so `request_id` and `opcode` are already known) are: `1001`, `1002`, `1003`, `1005`, `1006`, and `1007`. Only `1004` (`ERR_INVALID_MAGIC`) fails before a valid header is parsed.
+    3. The spec explicitly specifies sending an error frame before closing for `1001` (Section 5: "Server returns an error response with code 1001 ... and closes the connection") and `1002` (Section 8 and Example 8: sends error response frame with `flags = 0x03` matching `request_id`, then closes). For `1003`, Section 9 states "Connection closed immediately". For `1004`, magic is invalid so the connection is dropped immediately without reply. For `1005`, `1006`, and `1007`, the spec states the connection is closed, but is silent on whether an error response frame is sent first.
 
+### Fatal Errors (1001–1007) Catalog:
+
+| Code | Name | Happens when | Can header be valid? | Error frame sent before close? |
+|:---:|---|---|:---:|:---:|
+| **1001** | `ERR_UNSUPPORTED_PROTOCOL_VERSION` | Client sends unsupported version in `HELLO` | Yes | Yes (explicit in Section 5) |
+| **1002** | `ERR_UNSUPPORTED_FLAG` | Client sets reserved or unsupported flag bit | Yes | Yes (explicit in Section 8 & Example 8) |
+| **1003** | `ERR_FRAME_TOO_LARGE` | Frame `payload_len` exceeds `max_frame_size` | Yes | No (Section 9: "Connection closed immediately") |
+| **1004** | `ERR_INVALID_MAGIC` | Header does not begin with `0xCA 0xDB` | No | No (connection dropped immediately) |
+| **1005** | `ERR_MALFORMED_VARINT` | Varint in payload exceeds 10 bytes or terminates early | Yes | Spec is silent |
+| **1006** | `ERR_MALFORMED_PAYLOAD` | Payload ends before declared length or bad structure | Yes | Spec is silent |
+| **1007** | `ERR_UNKNOWN_TYPE_TAG` | Payload contains unrecognized type tag at top-level | Yes | Spec is silent |
+
+- **Open Question: Command Sent Before HELLO**:
+  - `protocol.md` Section 5 states: *"Upon opening a TCP connection, clients should perform a HELLO exchange:"*
+  - Notice the spec uses "should", not "must".
+  - In `errors.md`, there is no `ERR_HELLO_REQUIRED` error code. (Code `2003` is `ERR_INVALID_ARGUMENT`).
+  - If authentication is configured, code `5001` (`ERR_AUTH_REQUIRED`) is returned. However, if no authentication is required, the spec is silent on whether `HELLO` is mandatory before commands like `PING`, or if `HELLO` can be skipped.
+  - Added to Open Questions for Spec v0.2: Clarify whether `HELLO` is strictly required before any command when authentication is disabled.

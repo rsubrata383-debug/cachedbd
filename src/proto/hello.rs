@@ -340,6 +340,89 @@ mod tests {
     }
 
     #[test]
+    fn test_hello_exact_bytes_full_frame() {
+        // 1. HelloRequest exact byte representation
+        let req = HelloRequest::new(1, "cachedb-cli".to_string(), None);
+        let req_frame = Frame::new(Header::new(0x00, 1, Opcode::Hello, 0), req.to_value());
+        let mut req_buf = Vec::new();
+        encode_frame(&req_frame, &mut req_buf).expect("encode req frame");
+
+        let expected_req_bytes: &[u8] = &[
+            0xCA, 0xDB, // Magic
+            0x01, // Version 1
+            0x00, // Flags (Request)
+            0x00, 0x00, 0x00, 0x01, // Request ID 1
+            0x00, 0x01, // Opcode: Hello (0x0001)
+            0x00, 0x00, 0x00, 0x12, // Payload length: 18 bytes
+            // Payload (Array of 3 elements: Int(1), Text("cachedb-cli"), Nil)
+            0x06, // Tag: Array
+            0x03, // Count: 3
+            0x01, 0x02, // Int(1) -> zigzag(1) = 2
+            0x04, 0x0B, b'c', b'a', b'c', b'h', b'e', b'd', b'b', b'-', b'c', b'l',
+            b'i', // Text("cachedb-cli")
+            0x00, // Nil
+        ];
+        assert_eq!(&req_buf[..], expected_req_bytes);
+
+        // Decode from exact bytes
+        let decoded_req = decode_frame(expected_req_bytes).expect("decode expected req");
+        let (f_req, u_req) = match decoded_req {
+            Decoded::Complete((f, u)) => (f, u),
+            Decoded::NeedMore => panic!("expected complete"),
+        };
+        assert_eq!(u_req, expected_req_bytes.len());
+        assert_eq!(
+            HelloRequest::from_value(&f_req.payload).expect("parse req"),
+            req
+        );
+
+        // 2. HelloResponse exact byte representation
+        let resp = HelloResponse::new("cachedbd".to_string(), "0.1.0".to_string(), 1, 42);
+        let resp_frame = Frame::new(
+            Header::new(FLAG_RESPONSE, 1, Opcode::Hello, 0),
+            resp.to_value(),
+        );
+        let mut resp_buf = Vec::new();
+        encode_frame(&resp_frame, &mut resp_buf).expect("encode resp frame");
+
+        let expected_resp_bytes: &[u8] = &[
+            0xCA, 0xDB, // Magic
+            0x01, // Version 1
+            0x01, // Flags (FLAG_RESPONSE)
+            0x00, 0x00, 0x00, 0x01, // Request ID 1
+            0x00, 0x01, // Opcode: Hello (0x0001)
+            0x00, 0x00, 0x00, 0x51, // Payload length: 81 bytes
+            // Payload (Map of 4 entries)
+            0x07, // Tag: Map
+            0x04, // Count: 4
+            // Entry 1: "server_name" -> "cachedbd"
+            0x04, 0x0B, b's', b'e', b'r', b'v', b'e', b'r', b'_', b'n', b'a', b'm', b'e', 0x04,
+            0x08, b'c', b'a', b'c', b'h', b'e', b'd', b'b', b'd',
+            // Entry 2: "server_version" -> "0.1.0"
+            0x04, 0x0E, b's', b'e', b'r', b'v', b'e', b'r', b'_', b'v', b'e', b'r', b's', b'i',
+            b'o', b'n', 0x04, 0x05, b'0', b'.', b'1', b'.', b'0',
+            // Entry 3: "protocol_version" -> 1
+            0x04, 0x10, b'p', b'r', b'o', b't', b'o', b'c', b'o', b'l', b'_', b'v', b'e', b'r',
+            b's', b'i', b'o', b'n', 0x01, 0x02, // Entry 4: "client_id" -> 42
+            0x04, 0x09, b'c', b'l', b'i', b'e', b'n', b't', b'_', b'i', b'd', 0x01,
+            0x54, // zigzag(42) = 84 = 0x54
+        ];
+        assert_eq!(&resp_buf[..], expected_resp_bytes);
+
+        // Decode from exact bytes
+        let decoded_resp = decode_frame(expected_resp_bytes).expect("decode expected resp");
+        let (f_resp, u_resp) = match decoded_resp {
+            Decoded::Complete((f, u)) => (f, u),
+            Decoded::NeedMore => panic!("expected complete"),
+        };
+        assert_eq!(u_resp, expected_resp_bytes.len());
+        assert_eq!(
+            HelloResponse::from_value(&f_resp.payload).expect("parse resp"),
+            resp
+        );
+    }
+
+    #[test]
     fn test_negotiate_version() {
         assert_eq!(negotiate_version(1), Ok(1));
         assert_eq!(
