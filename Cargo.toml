@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "echo_nonblocking"
 test = true
 
+[[bench]]
+name = "store_bench"
+harness = false
+
 [dependencies]
 
 [target.'cfg(unix)'.dependencies]

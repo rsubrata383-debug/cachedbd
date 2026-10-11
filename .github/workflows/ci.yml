@@ -32,6 +32,12 @@ jobs:
       - name: Run tests
         run: cargo test
 
+      - name: Run property tests
+        run: cargo test --test property
+
+      - name: Run store benchmark smoke test
+        run: cargo bench --bench store_bench -- --smoke
+
       - name: Build documentation
         run: cargo doc --no-deps
 

@@ -89,6 +89,12 @@ pub struct Slot<V> {
     pub(crate) value: V,
 }
 
+/// Returns the in-memory size in bytes of an individual table slot (`Option<Slot<V>>`).
+#[must_use]
+pub const fn slot_size<V>() -> usize {
+    std::mem::size_of::<Option<Slot<V>>>()
+}
+
 /// Internal single table buffer holding contiguous slots.
 #[derive(Debug, Clone)]
 pub(crate) struct SingleTable<V> {
@@ -418,9 +424,7 @@ impl<V> SingleTable<V> {
                     }
                 }
 
-                if slot.psl > 0
-                    && self.find_index_with_hash(slot.hash, slot.key.as_ref()) != Some(i)
-                {
+                if self.find_index_with_hash(slot.hash, slot.key.as_ref()) != Some(i) {
                     return Err(format!("Invariant 5 violated: duplicate key at slot {i}"));
                 }
             }
@@ -523,6 +527,12 @@ impl<V> RobinHoodTable<V> {
         self.old_table.is_some()
     }
 
+    /// Returns the in-memory size in bytes of an individual table slot (`Option<Slot<V>>`).
+    #[must_use]
+    pub const fn slot_size(&self) -> usize {
+        slot_size::<V>()
+    }
+
     /// Steps incremental table migration by inspecting and moving up to `buckets` slots from `old_table`.
     ///
     /// # Reasoning: Backward-Shift Removal Prevents Holes in `old_table`
@@ -576,6 +586,11 @@ impl<V> RobinHoodTable<V> {
                 self.migrate_cursor = self.migrate_cursor.saturating_add(1);
                 moved = moved.saturating_add(1);
             } else {
+                // Ensure main_table can accept a new key before removing from old_table
+                if self.main_table.len >= self.main_table.max_load_limit() {
+                    return Err(TableFull);
+                }
+
                 // Remove occupied bucket with backward shift to maintain contiguous clusters in old_table
                 let Some(slot) = old.remove_at_and_shift(self.migrate_cursor) else {
                     break;
@@ -588,21 +603,11 @@ impl<V> RobinHoodTable<V> {
                     }
                     Err(returned_slot) => {
                         // Put the item back into old_table so no key is ever lost!
-                        // Restoring must succeed because the slot was just removed from old_table.
                         let restore_res = old.insert_slot(returned_slot);
                         debug_assert!(
                             restore_res.is_ok(),
                             "restoring slot into old_table must succeed because slot was just removed"
                         );
-                        if let Err(unrestored) = restore_res {
-                            for s in &mut old.slots {
-                                if s.is_none() {
-                                    *s = Some(unrestored);
-                                    old.len = old.len.saturating_add(1);
-                                    break;
-                                }
-                            }
-                        }
                         return Err(TableFull);
                     }
                 }

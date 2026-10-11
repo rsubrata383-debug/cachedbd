@@ -269,6 +269,19 @@ Follow the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) ch
 
 ---
 
+## 11.1 Random Number Generation & Bitwise Arithmetic
+
+- **Never use naive PRNGs for security:** Linear generators (such as `xorshift`, `pcg`, or LCGs) MUST NOT be used for keys, tokens, nonces, or security-sensitive identifiers. Use `rand::rngs::OsRng` or dedicated cryptographic crates.
+- **Fail fast on invalid PRNG seeds:** Deterministic generators with prohibited zero states (e.g., XorShift) MUST NOT silently fall back to a hardcoded constant seed. Return `Result::Err` or panic on invalid input to prevent independent components from silently generating identical sequences.
+- **Extract high-order bits for booleans and small integers:** Linear feedback and shift-register generators exhibit poor diffusion and strong linear dependencies in lower bits. When producing booleans or flags, inspect the most significant bits (`(x as i64) < 0` or `x >> 63 == 1`), never the lowest bit (`x & 1`).
+- **Define range boundaries explicitly:**
+  - Half-open range `[min, max)`: Explicitly check that `min < max`. Never return `min` when `min == max` (an empty range has zero elements).
+  - Inclusive range `[min, max]`: Compute the span using checked arithmetic: `(max - min).checked_add(1)`.
+- **Prevent target-architecture truncation:** Always compute range modulo and bitwise bounds using the wide integer type (`u64`) _before_ casting to pointer-sized types (`usize`) to prevent 32-bit truncation on targets like `wasm32` or ARM Cortex.
+- **Document modulo bias:** State in doc comments when a range helper accepts `% diff` modulo bias for performance. Use rejection sampling (e.g., Lemire's reduction) when uniform distribution is strictly required.
+
+---
+
 ## 12. Logging and Observability
 
 - Libraries SHOULD NOT print to stdout or stderr. Use the `log` or `tracing` facade and let the application choose the output.
@@ -333,6 +346,10 @@ AI agents MUST NOT generate:
 - Secrets or credentials in source code.
 - `todo!()`, `unimplemented!()`, or placeholder code left in finished work (unless the user asked for a skeleton).
 - `#[allow(...)]` used only to hide a warning you did not fix.
+- Silent fallback seeds (e.g., `if seed == 0 { seed = DEFAULT; }`) in PRNG constructors that conceal uninitialized or invalid states.
+- Extracting boolean values or sub-ranges from bit 0 (`& 1`) of linear shift/XorShift generators.
+- Range sampling functions that return `min` on empty half-open ranges where `min >= max`.
+- Downcasting 64-bit random words to `usize` before applying modulo arithmetic.
 
 ---
 
@@ -369,6 +386,10 @@ Before you finish, check:
 - [ ] No new dependency, or the new one is justified
 - [ ] Public API follows the Rust API Guidelines and is as small as possible
 - [ ] Changes are small and do not touch unrelated code
+- [ ] PRNGs reject invalid seeds explicitly instead of silently substituting a shared default
+- [ ] Bitwise extractions and booleans sample from high-order bits, not bit 0
+- [ ] Range bounds logic handles empty intervals correctly without silent out-of-spec returns
+- [ ] Arithmetic operations on wide integers (`u64`) are completed before casting to `usize`
 
 ---
 

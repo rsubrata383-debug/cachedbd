@@ -1176,3 +1176,53 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
    - Implemented `test_differential_3_phases_5_seeds`: 300,000 operations per seed across 3 phases (grow, shrink, mixed) with 20,000 keys and 5 fixed seeds.
    - 10% operations run `step_migration(1..=4)`.
    - Validates $\ge 1,000$ operations during active resizing and $\ge 10$ finished resizes, with bidirectional consistency checks against `std::collections::HashMap`.
+
+---
+
+## 2026-10-11: Week 6 Step 3: Full Invariants List and Pre-Migration Capacity Safeguard
+
+- **Date**: 2026-10-11
+- **Scope**: Validated table invariant checks and hardened `step_migration` against capacity boundary conditions.
+
+### Full Invariant Rules Checked:
+1. **PSL is exact**: For every occupied slot $i$, `slot.psl == (i + capacity - ideal) & mask` where `ideal = hash & mask`.
+2. **PSL gradient**: For adjacent slots $i$ and $(i + 1) \pmod{\text{capacity}}$, if both are occupied, `psl[i + 1] <= psl[i] + 1`.
+3. **Probe continuity (empty slot ends probe)**: For every occupied slot $i$ with `psl > 0`, the previous slot `(i - 1 + capacity) & mask` must be occupied.
+4. **Len is exact**: The total count of occupied slots strictly matches `table.len`.
+5. **No duplicate keys**: For every occupied slot $i$, `find_index_with_hash(slot.hash, slot.key) == Some(i)` (uniqueness and reachability).
+6. **Slots before cursor are empty**: In `old_table`, all slots $0 \le i < \text{migrate_cursor}$ are strictly empty (`None`).
+7. **No key in both tables**: No key present in `old_table` exists in `main_table`.
+
+### Pre-Migration Capacity Check:
+- In `step_migration`, before extracting any slot from `old_table`, `main_table.len < main_table.max_load_limit()` is checked.
+- If `main_table` is at or above its load limit, `step_migration` immediately returns `Err(TableFull)` without touching `old_table`, eliminating the fallback loop.
+
+---
+
+## 2026-10-11: Week 6 Step 3: Property Tests, Automated Shrinker, and Store Benchmarks
+
+- **Date**: 2026-10-11
+- **Scope**: Implemented property test suite with custom shrinker in `tests/property.rs`, standalone benchmark harness in `benches/store_bench.rs`, CI workflows, and empirical documentation in `docs/benchmarks.md` and `docs/design/hash-table.md`.
+
+### Architecture & Decisions:
+1. **Zero-Dependency Property Test Harness & Shrinker**:
+   - Implemented `XorShift64` PRNG and multi-seed runner (`CACHEDB_PROP_SEEDS`, default 24 seeds).
+   - Shrinker algorithm: iteratively tries removing halves (2), quarters (4), and single operations until reaching minimal failing operation sequences.
+   - Verified via `test_deliberately_wrong_reference_shrinker` (`#[should_panic]`): minimized a 100-operation sequence down to $\le 4$ operations.
+   - Property tests cover: mixed models with differential checking against `std::collections::HashMap`, complex key shapes (empty, binary, embedded nulls, 4 KB), severe hash collisions (modulo buckets and circular wraparound), resize invariants, permutation order independence, and overwrite/remove idempotence.
+   - Full property test suite runs in under 0.10 seconds in debug mode.
+2. **Comprehensive Benchmark Harness (`benches/store_bench.rs`)**:
+   - Head-to-head comparison between `RobinHoodTable<u64>` and `std::collections::HashMap<Box<[u8]>, u64>`.
+   - Supports `--smoke` (50,000 keys for fast CI execution) and `--keys <N>` (default 1,000,000 keys).
+   - Tracks insert latency per operation in `Vec<u32>` and computes $p50$, $p99$, $p99.9$, $p99.99$, and $max$.
+   - Tracks top 5 slowest operations and identifies the causal state transition (resize buffer allocation vs migration batch vs collision displacements).
+   - Measures table quality metrics: max PSL, average PSL, load factor, finished resizes, slot size, and process VmRSS (Linux `/proc/self/status`, `"n/a"` on Windows).
+   - Memory isolation: tables are dropped sequentially to prevent cross-table memory accumulation.
+3. **CI Pipeline Integration**:
+   - Updated `.github/workflows/ci.yml` with `cargo test --test property` and `cargo bench --bench store_bench -- --smoke`.
+   - Created `.github/workflows/bench.yml`: manual `workflow_dispatch` trigger with configurable `keys` parameter, 30-minute timeout, Markdown summary written to `$GITHUB_STEP_SUMMARY`, and `benchmark-results.txt` artifact upload.
+4. **Empirical Results (1,000,000 Keys)**:
+   - *Throughput*: 0.87 Mops/s insert (1150 ns), 1.41 Mops/s get hits (709 ns), 2.13 Mops/s remove (470 ns).
+   - *Latency Percentiles*: $p50 = 0.50\text{ µs}$, $p99 = 2.50\text{ µs}$, $p99.9 = 37.5\text{ µs}$, $p99.99 = 226.7\text{ µs}$, $max = 64.7\text{ ms}$.
+   - *Table Quality*: Max PSL = 8, Average PSL = 0.44 probes/key across 1M entries, confirming outstanding probe fairness and clustering elimination.
+   - *Spike Attribution*: Allocating and zero-initializing the new backing buffer when starting resize ($O(\text{new capacity})$) is the dominant source of tail latency ($24\text{ ms} - 64\text{ ms}$ for 1M-2M slot allocations).

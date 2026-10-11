@@ -56,6 +56,7 @@ Tombstone markers degrade lookup performance and require periodic cleanup passes
 
 - **Max Load Factor**: `7 / 8` (87.5%).
   - *Rationale*: With Robin Hood hashing, variance in probe sequence lengths is remarkably small even at 87.5% load, yielding average PSLs typically between 1 and 3. An 87.5% threshold saves significant memory compared to 50% or 75% thresholds while avoiding clustering cliffs.
+  - *Empirical PSL at 1,000,000 Keys*: Measured with `store_bench`, the table achieved a **maximum PSL of 8** and an **average PSL of 0.44** probes per key, confirming near-optimal probe efficiency where the overwhelming majority of keys reside in their ideal hash bucket.
 - **Incremental Resizing**: When an insertion causes `main_table.len + 1 > main_table.capacity * 7 / 8`, the table initiates incremental resizing by doubling capacity.
 - **Max Capacity**: $2^{30}$ slots (~1.07 billion buckets). If the table is already at maximum capacity and cannot double, insertions that exceed the 87.5% threshold return `Err(TableFull)`. Overwriting an existing key never increases load and always succeeds.
 
@@ -118,3 +119,30 @@ In an in-memory database targeting a strict $< 1\text{ ms}$ p99 latency SLA and 
 - **Worst-Case Cost**:
   - `get`: 0 migration buckets touched. Probes $\approx 1-2$ slots in `main_table` (and `old_table` on miss).
   - `insert` / `remove` / `get_mut`: At most $16$ buckets touched in `old_table` plus $1$ Robin Hood operation in `main_table`. Every operation remains strictly $\mathcal{O}(1)$ and runs in sub-microsecond time.
+
+---
+
+## 9. Benchmark Profile and Latency Spikes (Week 6 Step 3)
+
+Empirical performance measured across 1,000,000 keys using `cargo bench --bench store_bench -- --keys 1000000`:
+
+### 9.1 Insert Latency Distribution
+- **Median ($p50$)**: `0.50 µs` (500 ns)
+- **99th percentile ($p99$)**: `2.50 µs`
+- **99.9th percentile ($p99.9$)**: `37.50 µs`
+- **99.99th percentile ($p99.99$)**: `226.70 µs`
+- **Maximum latency ($max$)**: `64,741.60 µs` (~64.7 ms)
+
+### 9.2 Root Causes of Latency Spikes
+The top slowest inserts recorded during the 1M key benchmark revealed the distinct root causes of latency spikes:
+
+1. **New Table Allocation and Page Zeroing (Primary Cause)**:
+   - *Example*: Operation #917,504 (`64.74 ms`) triggered resize expansion from 1,048,576 to 2,097,152 slots.
+   - *Example*: Operation #458,752 (`24.75 ms`) triggered resize expansion from 524,288 to 1,048,576 slots.
+   - *Mechanism*: Initializing `Box<[Option<Slot<V>>]>` for 2M slots requires allocating 83.9 MB of contiguous memory and writing zeroed memory. Under OS virtual memory management, allocating large buffers causes kernel memory faults and zero-fill pages, creating a transient multi-millisecond pause at the exact moment a resize starts.
+2. **Incremental Migration Batches (Secondary Cause)**:
+   - *Example*: Operation #477,293 (`45.48 ms`) and #490,952 (`38.03 ms`) occurred while migrating 16 buckets from `old_table`.
+   - *Mechanism*: Moving 16 occupied buckets shifts entries and touches cache lines across two separate tables (`old_table` and `main_table`). While each individual bucket move is fast, executing 16 moves consecutively while under memory allocator pressure causes elevated latency.
+3. **Collision Chains & Probe Displacements (Minimal Impact)**:
+   - In steady state without resize allocation, Robin Hood displacement bounds search lengths tightly.
+   - With average PSL at 0.44 and max PSL at 8, collision displacements never exceed small single-digit microseconds, keeping 99% of all insertions under 2.50 µs.

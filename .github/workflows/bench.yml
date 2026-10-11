@@ -1,0 +1,39 @@
+name: Store Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      keys:
+        description: "Number of keys to benchmark"
+        required: false
+        default: "1000000"
+        type: string
+
+env:
+  RUST_BACKTRACE: "1"
+
+jobs:
+  benchmark:
+    name: Run Store Benchmark (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run store benchmark
+        run: |
+          KEYS="${{ inputs.keys || '1000000' }}"
+          echo "Running store benchmark with $KEYS keys..."
+          cargo bench --bench store_bench -- --keys "$KEYS" | tee benchmark-results.txt
+          cat benchmark-results.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark-results.txt
+          if-no-files-found: error
