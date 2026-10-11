@@ -1050,3 +1050,40 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - In `errors.md`, there is no `ERR_HELLO_REQUIRED` error code. (Code `2003` is `ERR_INVALID_ARGUMENT`).
   - If authentication is configured, code `5001` (`ERR_AUTH_REQUIRED`) is returned. However, if no authentication is required, the spec is silent on whether `HELLO` is mandatory before commands like `PING`, or if `HELLO` can be skipped.
   - Added to Open Questions for Spec v0.2: Clarify whether `HELLO` is strictly required before any command when authentication is disabled.
+
+---
+
+## 2026-10-11: Week 5 Complete
+
+- **Date**: 2026-10-11
+- **Status Note**: The earlier "Week 5 complete" entry was prematurely recorded before HELLO negotiation, hard limits, and the 1-hour fuzzing workflow were implemented; all remaining scope has now been fully built, verified, and closed.
+- **Roadmap Week 5 Deliverables & Evidence**:
+  1. *Frame Encode/Decode*: Implemented in `src/proto/encode.rs` and `src/proto/header.rs`. Verified by round-trip tests matching all 8 frozen specification hex examples byte-by-byte (`test_round_trip_all_eight_spec_examples`), plus 300 randomized deterministic round-trips.
+  2. *Streaming Parser*: Implemented in `src/proto/decode.rs`. Verified by split-read tests at every possible byte boundary (`test_split_reads_every_possible_split_point`), 1-byte-at-a-time streaming (`test_one_byte_at_a_time_streaming`), back-to-back pipelined requests (`test_pipelining_two_frames_back_to_back`), and partial buffer `Decoded::NeedMore` handling.
+  3. *HELLO with Version Negotiation*: Implemented in `src/proto/hello.rs`. `HelloRequest` and `HelloResponse` serialize and deserialize with full type validation; `negotiate_version` enforces `protocol_version == 1` per v0.1 spec, rejecting versions 0, 2, 255 with `ERR_UNSUPPORTED_PROTOCOL_VERSION` (1001). Full frame exact wire byte layouts verified byte-for-byte in `test_hello_exact_bytes_full_frame`.
+  4. *Hard Limits*: Implemented in `src/proto/limits.rs`. Fast rejection of oversized frames (`ERR_FRAME_TOO_LARGE`, 1003) at header parse time before allocating; fast rejection of `max_args > 65,536` on `COMMAND` requests (`ERR_TOO_MANY_ARGS`, 2007) immediately upon reading the array count, before decoding items or allocating buffers; recursion depth protected with `ERR_MAX_DEPTH_EXCEEDED` (max 8 levels).
+  5. *Fuzzing Campaign*: Configured 3 fuzz targets (`decode_frame`, `decode_value`, `split_stream`) in `fuzz/`. 60-second CI smoke checks run green in GitHub Actions. Extended 60-minute fuzzing workflow (`.github/workflows/fuzz-long.yml`) executed on 2026-10-11 across all 3 targets with zero crashes.
+
+---
+
+## 2026-10-11: Week 6 Step 1: Hash Function and Robin Hood Table Core
+
+- **Date**: 2026-10-11
+- **Scope**: Implemented non-cryptographic hash function (`src/storage/hash.rs`) and core fixed-capacity Robin Hood hash table (`src/storage/table.rs`) in `src/storage/`.
+
+### Step 0 Review:
+1. *Key Rules*: `commands.md` and `values.md` specify keys as arbitrary binary byte sequences (`&[u8]`). Empty keys (`""`) return error 2006 (`ERR_EMPTY_KEY`) and default max key size is 1 KB (1024 bytes). The low-level table accepts any byte slice (`Box<[u8]>`), including empty and large keys; key length validation (empty key and 1 KB limit) is enforced at the command parsing/dispatch layer in Week 7, not by the storage table.
+2. *Value Model*: In Phase 1 / v0.1, values are primitive types (`Value`). The table is generic `RobinHoodTable<V>`, allowing unit tests to store lightweight types (`u64`) while the storage engine stores `proto::Value`.
+3. *Threading Model*: Per `docs/design/threading.md`, the table is owned and accessed strictly by a single thread (the shard owner). It contains zero mutexes, zero read-write locks, and zero atomics.
+4. *Week 6 Plan*: Step 1 focuses on core fixed-capacity table with Robin Hood probing, backward-shift deletion, and invariant checking. Step 2 will add incremental resizing (dual-table migration) when load reaches 7/8. Step 3 adds property testing and scale benchmarks.
+
+### Design Choices:
+- **Hash Function**: Based on Wyhash (v4) 128-bit multiply-and-fold (`mum`) algorithm. Safe Rust, 0 lossy casts, 0 panics. Per-process seed initialized via `std::hash::RandomState`. Avalanche check achieves ~31.93 flipped bits (ideal 32) over 200 inputs; 100k keys distributed across 1024 buckets stay well within $\pm 40\%$ deviation.
+- **Robin Hood Probing**: Slots store `hash (u64)`, `psl (u32)`, `key (Box<[u8]>)`, `value (V)`. Ideal slot computed via `hash & mask`. Displaces richer elements when `curr_psl > existing.psl`.
+- **Backward-Shift Deletion**: Deleting an element shifts subsequent cluster elements with `psl > 0` backwards by 1 and decrements their PSL. Eliminates tombstones and preserves contiguous clusters.
+- **Fixed Capacity Limit**: Fixed capacity with maximum load factor $7/8$ (87.5%). Insert returns `Err(TableFull)` when new insertion would exceed $7/8$ capacity. Overwriting an existing key never increases load and always succeeds.
+- **Invariants Checked**: Validated via `check_invariants()`: accurate PSL calculation, neighbor PSL gradient $psl[i+1] \le psl[i] + 1$, cluster continuity, length consistency, and key uniqueness.
+- **Stats**: Under 70% load with 183,500 keys in 262,144 slots, `max_psl` was 13 and `avg_psl` was 1.176.
+
+### Open Questions for Spec v0.2:
+- Does future spec v0.2 require typed keys (e.g. integer or text keys) in collections or command dispatch, or remain purely raw binary? (Values spec confirms raw binary `&[u8]`).

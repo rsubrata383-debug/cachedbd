@@ -50,8 +50,8 @@ Progress is tracked through the milestone checklist in [`cachedb-roadmap.md`](ca
 | **Phase 0** | **Decisions & Design** | **Completed** | Vision, threading model, and frozen `v0.1` specifications. |
 | **Phase 1** | **Week 3: Networking Basics** | **Completed** | Linux `epoll` syscall wrapper, `EventLoop`, non-blocking echo server. |
 | **Phase 1** | **Week 4: Buffers & Connections** | **Completed** | `ConnectionTable`, flow-control backpressure, 10,000 idle connection scale test. |
-| **Phase 1** | **Week 5: Wire Protocol** | *In progress* | Binary frame encode/decode, streaming chunk parser, fuzz testing. |
-| **Phase 1** | **Week 6: Hash Table** | *Upcoming* | Custom Robin Hood hash table with incremental background resizing. |
+| **Phase 1** | **Week 5: Wire Protocol** | **Done** | Binary frame encode/decode, streaming chunk parser, HELLO negotiation, limits, fuzz testing. |
+| **Phase 1** | **Week 6: Hash Table** | *In progress* | Custom Robin Hood hash table with incremental background resizing. |
 | **Phase 1** | **Week 7: Core Commands** | *Upcoming* | `ping`, `put`, `fetch`, `drop`, `has`, `size`, `bump`. |
 | **Phase 1** | **Week 8: Tooling & v0.1 Release** | *Upcoming* | CLI shell (`cachedb-cli`), bench tool (`cachedb-bench`), v0.1 release tag. |
 
@@ -72,7 +72,8 @@ cachedb/
 │   ├── design/                 # High-level architecture decisions
 │   │   ├── vision.md           # Workloads, targets, and non-goals
 │   │   ├── naming.md           # Naming conventions and defaults
-│   │   └── threading.md        # Concurrency and threading model
+│   │   ├── threading.md        # Concurrency and threading model
+│   │   └── hash-table.md       # Robin Hood hash table architecture
 │   └── spec/                   # Frozen v0.1 specifications
 │       ├── protocol.md         # Binary wire protocol format
 │       ├── values.md           # Value model, encoding, and limits
@@ -84,11 +85,26 @@ cachedb/
 │   ├── bin/
 │   │   ├── cachedb-cli.rs      # Interactive terminal client
 │   │   └── cachedb-bench.rs    # Benchmarking and load generation harness
-│   └── net/                    # Networking and event loop abstractions
-│       ├── buffer.rs           # ReadBuffer, WriteQueue, RingBuffer
-│       ├── connection.rs       # Connection and ConnectionTable registry
-│       ├── event_loop.rs       # Single-threaded EventLoop and timers
-│       └── sys.rs              # Linux epoll abstraction (safe RAII)
+│   ├── net/                    # Networking and event loop abstractions
+│   │   ├── buffer.rs           # ReadBuffer, WriteQueue, RingBuffer
+│   │   ├── connection.rs       # Connection and ConnectionTable registry
+│   │   ├── event_loop.rs       # Single-threaded EventLoop and timers
+│   │   └── sys.rs              # Linux epoll abstraction (safe RAII)
+│   ├── proto/                  # Wire protocol parser and serializer
+│   │   ├── decode.rs           # Zero-copy streaming frame decoder
+│   │   ├── encode.rs           # Atomic frame serializer
+│   │   ├── header.rs           # 14-byte wire header definition
+│   │   ├── hello.rs            # HELLO handshake and version negotiation
+│   │   ├── item.rs             # Value AST encoder and decoder
+│   │   ├── limits.rs           # Framing limits (max_frame_size, max_args)
+│   │   └── varint.rs           # LEB128 unsigned and zigzag varints
+│   └── storage/                # In-memory storage engine
+│       ├── hash.rs             # 64-bit seeded non-cryptographic hash function
+│       ├── table.rs            # Robin Hood hash table core
+│       └── mod.rs              # Storage module definitions
+├── fuzz/                       # Cargo-fuzz test suite
+│   ├── Cargo.toml              # Fuzz targets configuration
+│   └── fuzz_targets/           # libFuzzer fuzz harnesses
 ├── examples/
 │   ├── echo_blocking.rs        # Educational synchronous echo server
 │   └── echo_nonblocking.rs     # Production event-driven non-blocking echo server
