@@ -98,6 +98,9 @@ impl ProtoError {
 
     /// Error 2001: Unknown command or unsupported opcode.
     pub const ERR_UNKNOWN_COMMAND: Self = Self::new(2001, "unknown command");
+
+    /// Error 3005: Collection exceeds nesting depth limit (8 levels).
+    pub const ERR_MAX_DEPTH_EXCEEDED: Self = Self::new(3005, "maximum nesting depth exceeded");
 }
 
 impl fmt::Display for ProtoError {

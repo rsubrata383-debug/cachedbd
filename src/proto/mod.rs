@@ -20,7 +20,8 @@ pub use header::{
     HEADER_LEN, Header, MAGIC, Opcode, ProtoError, VERSION,
 };
 pub use item::{
-    TAG_BOOL, TAG_BYTES, TAG_FLOAT, TAG_INT, TAG_NIL, TAG_TEXT, Value, decode_value, encode_value,
+    MAX_NESTING_DEPTH, TAG_ARRAY, TAG_BOOL, TAG_BYTES, TAG_ERROR, TAG_FLOAT, TAG_INT, TAG_MAP,
+    TAG_NIL, TAG_TEXT, Value, decode_value, encode_value, skip_value,
 };
 pub use varint::{
     MAX_VARINT_BYTES, decode_ivarint, decode_uvarint, encode_ivarint, encode_uvarint,

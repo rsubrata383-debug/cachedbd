@@ -802,6 +802,34 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
     - Deterministic 1,000-iteration round-trip loop for pseudorandom Int and Bytes.
     - Fuzz resilience: 2,000 pseudo-random byte inputs (lengths 0..64) fed to `decode_value` with zero panics.
 
+---
+
+## 2026-10-11: Week 5 Step 3b: Compound Items
+
+- **Date**: 2026-10-11
+- **Summary**: Implemented compound payload items (`Array`, `Map`, `Error`), collection nesting depth limit (8 levels), allocation amplification protections, and Section 4.3 forward-compatible unknown-tag skipping in `src/proto/item.rs`.
+- **Limits Found in Specifications**:
+  - *Max collection nesting depth*: 8 levels (enforced with code `3005` `ERR_MAX_DEPTH_EXCEEDED` per `errors.md` and `values.md` Section 4).
+  - *Max frame size*: 64 MB default (`67,108,864` bytes per `protocol.md` Section 9).
+  - *Max argument count*: 65,536 items (command argument frames).
+  - *Max key size*: 1 KB default (`1,024` bytes).
+  - *Max value size*: 32 MB default.
+  - *Generic collection item count*: The spec defines no separate item-count limit for arbitrary Array/Map payload items (bounded only by 64 MB frame size and memory).
+- **Unknown-Tag Decision (Section 4.3)**:
+  - `protocol.md` Section 4.3 states: *"Every future type tag (>= 0x09) must place an unsigned varint byte length directly after the tag. Older clients that encounter an unknown type tag can read the varint length and safely skip past the unknown item."*
+  - The spec prescribes *skipping* rather than keeping. Therefore, we do not store unknown items into an `Unknown` variant on `Value`. Instead:
+    - Within collections (`Array` and `Map`), items with tags `>= 0x09` are safely skipped using their varint length prefix without aborting collection decoding.
+    - `skip_value(input: &[u8]) -> Result<usize, ProtoError>` is provided to skip any valid item (scalar, compound, or extension tag) without allocating.
+    - Direct calls to `decode_value` on a standalone unknown tag return `ERR_UNKNOWN_TYPE_TAG` (`1007`) because no `Value` variant exists for unrepresentable types.
+- **Safety and Memory Defenses**:
+  - Bounded initial capacity: incoming collection vectors are allocated with `min(count, bytes_left, 1024)`. If declared count exceeds remaining bytes (or remaining bytes / 2 for Map), decoding errors immediately (`ERR_MALFORMED_PAYLOAD` `1006`).
+  - Strict code bounds: `Error` item code is validated to fit in `u16` without lossy `as` casts.
+  - Maximum nesting depth: checked at both encode and decode time. Encoding an over-deep value returns `Err(ProtoError::ERR_MAX_DEPTH_EXCEEDED)`.
+- **Open Questions**:
+  - *Memory amplification*: A 64 MB payload of Nil items could create tens of millions of `Value`s (memory amplification). We need an item-count limit or a total-items budget in spec v0.2 / server config.
+  - *Map forward compatibility*: When either the key or value in a Map pair uses an unknown tag `>= 0x09`, our parser currently skips the entire pair. Spec v0.2 should formally clarify whether partial pairs are discarded or whether Map keys must always belong to a restricted scalar type set.
+
+
 
 
 
