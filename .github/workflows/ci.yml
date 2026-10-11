@@ -56,9 +56,13 @@ jobs:
           cargo test --release --test soak -- --ignored --nocapture --test-threads=1
 
   fuzz-smoke:
-    name: Fuzz smoke test (Linux)
+    name: Fuzz smoke (${{ matrix.target }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [decode_frame, decode_value, split_stream]
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -69,17 +73,15 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
 
-      - name: Run fuzz smoke tests
+      - name: Run fuzz smoke test
         run: |
           # Quick smoke test (60s per target) to catch immediate regressions in CI
           # without burning runner minutes; full fuzz campaigns run out-of-band.
-          cargo fuzz run decode_frame -- -max_total_time=60 -rss_limit_mb=2048
-          cargo fuzz run decode_value -- -max_total_time=60 -rss_limit_mb=2048
-          cargo fuzz run split_stream -- -max_total_time=60 -rss_limit_mb=2048
+          cargo fuzz run ${{ matrix.target }} -- -max_total_time=60 -rss_limit_mb=2048
 
       - name: Upload crash artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: fuzz-artifacts
+          name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts

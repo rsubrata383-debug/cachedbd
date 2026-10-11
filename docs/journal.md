@@ -883,4 +883,27 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - Installs `cargo-fuzz` and executes 60-second smoke tests across all three targets (`decode_frame`, `decode_value`, `split_stream`) with a 2 GB RSS limit.
   - Configured automated artifact upload for `fuzz/artifacts` on failure so crashes can be immediately inspected and reproduced.
 
+---
+
+## 2026-10-11: First Fuzz Finding
+
+- **Date**: 2026-10-11
+- **Fuzz Crash Finding**:
+  - CI execution of `cargo fuzz run decode_frame` found a panic on a 29-byte frame:
+    `ca db 01 00 00 00 00 0a 00 02 00 00 00 0f 06 03 0d 03 70 75 74 04 04 75 73 65 72 01 54`
+  - This payload is an `Array(3)` containing an unknown extension tag item (`0x0d 0x03 70 75 74`), followed by `Text("user")` and `Int(42)`.
+  - The wire header declared `payload_len = 15`.
+  - The decoder correctly followed Section 4.3 and skipped the unknown-tag item, returning `Array([Text("user"), Int(42)])`.
+  - When the decoded `Frame` was re-encoded, the newly encoded payload had length 10 (omitting the skipped unknown item).
+  - The fuzz target previously asserted `re_decoded == Decoded::Complete((frame, encoded.len()))`, comparing `re_frame.header.payload_len` (10) against `frame.header.payload_len` (15), which panicked (`10 != 15`).
+- **Resolution**:
+  - The decoder behavior was 100% correct according to the specification.
+  - The fuzz check was amended: `decode_frame` fuzz target now compares `flags`, `request_id`, `opcode`, and `payload` equality between the original and re-decoded frame. For the re-encoded bytes, it verifies `re_frame.header.payload_len == encoded.len() - HEADER_LEN` and `re_used == encoded.len()`.
+  - Audited `split_stream.rs` (compares all-at-once vs chunked decoding on the exact same wire bytes, so wire lengths match) and `decode_value.rs` (re-encodes value and checks `re_used == encoded.len()`, unaffected by wire headers).
+  - Added unit regression test `test_regression_fuzz_unknown_tag_in_array_payload_len_shrinks` in `src/proto/decode.rs`.
+  - Added binary seed `regression_unknown_tag_skip.bin` to `fuzz/corpus/decode_frame/`.
+  - Updated CI to run `decode_frame`, `decode_value`, and `split_stream` as isolated matrix jobs with individual artifact uploads.
+- **Open Design Note**:
+  - Frame.header.payload_len is the wire value. After skipping unknown items inside Array/Map, it can be larger than the length of a re-encoded payload. Consider removing payload_len from Frame (derive it when encoding) in a future cleanup.
+
 

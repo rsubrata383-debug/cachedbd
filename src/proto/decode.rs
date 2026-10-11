@@ -534,4 +534,45 @@ mod tests {
             let _ = decode_frame(&bytes);
         }
     }
+
+    #[test]
+    fn test_regression_fuzz_unknown_tag_in_array_payload_len_shrinks() {
+        // This case was found by fuzzing in CI on 2026-10-11.
+        // A wire frame with an unknown tag (0x0d) skipped inside an Array has wire payload_len = 15.
+        // After re-encoding the resulting in-memory Value, the new wire payload_len is 10.
+        let raw = [
+            0xca, 0xdb, 0x01, 0x00, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x02, 0x00, 0x00, 0x00, 0x0f,
+            0x06, 0x03, 0x0d, 0x03, 0x70, 0x75, 0x74, 0x04, 0x04, 0x75, 0x73, 0x65, 0x72, 0x01,
+            0x54,
+        ];
+
+        let decoded = decode_frame(&raw).expect("decode_frame succeeds on wire frame");
+        let (frame, used) = match decoded {
+            Decoded::Complete((f, u)) => (f, u),
+            Decoded::NeedMore => panic!("expected Decoded::Complete"),
+        };
+
+        assert_eq!(used, 29);
+        assert_eq!(frame.header.payload_len, 15);
+        assert_eq!(
+            frame.payload,
+            Value::Array(vec![Value::Text("user".to_string()), Value::Int(42)])
+        );
+
+        let mut re_encoded = Vec::new();
+        encode_frame(&frame, &mut re_encoded).expect("encode_frame succeeds");
+
+        let re_decoded = decode_frame(&re_encoded).expect("decode_frame succeeds on re-encoded");
+        let (re_frame, re_used) = match re_decoded {
+            Decoded::Complete((f, u)) => (f, u),
+            Decoded::NeedMore => panic!("expected Decoded::Complete"),
+        };
+
+        assert_eq!(re_used, re_encoded.len());
+        assert_eq!(re_frame.header.payload_len, 10);
+        assert_eq!(re_frame.header.flags, frame.header.flags);
+        assert_eq!(re_frame.header.request_id, frame.header.request_id);
+        assert_eq!(re_frame.header.opcode, frame.header.opcode);
+        assert_eq!(re_frame.payload, frame.payload);
+    }
 }
