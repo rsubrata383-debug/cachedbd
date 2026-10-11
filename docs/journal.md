@@ -673,6 +673,22 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - **Why Added**: The `test_ten_thousand_real_tcp_idle_connections` test in `tests/soak.rs` creates 10,000 client sockets and 10,000 server sockets, requiring more than 20,000 open file descriptors. On default environments (and standard CI runs), the default soft descriptor limit is 1,024, causing the test to be marked `#[ignore]`. By raising the limit with `ulimit -n 30000` in a dedicated CI job, this test runs on every workflow run and manual trigger.
 - **What It Proves**: It proves that the single-threaded networking stack and `ConnectionTable` handle 10,000 live kernel TCP sockets concurrently on real Linux loopback without descriptor leaks, stack overflow, or memory exhaustion.
 
+---
+
+## 2026-10-11: Linux EventLoop 10,000 Real TCP Connection Soak Test
+
+- **Date**: 2026-10-11
+- **Summary**: Added `test_ten_thousand_real_tcp_event_loop_idle_connections` to `tests/soak.rs` (`#[cfg(target_os = "linux")]`, `#[ignore = "requires ulimit -n >= 25,000"]`).
+- **Context & Motivation**:
+  - The earlier test (`test_ten_thousand_real_tcp_idle_connections`) only connected sockets and inserted them directly into `ConnectionTable` in a loop. It never registered the descriptors with epoll, never ran `EventLoop` ticks, and never verified that the epoll event loop could actually poll, dispatch, and route I/O across 10,000 live sockets.
+  - This new test proves the complete `EventLoop` abstraction under real kernel load:
+    1. Binds a non-blocking `TcpListener` registered on `LISTENER_TOKEN` with `EventLoop`.
+    2. Connects 10,000 real clients in batches of 200, interleaving `event_loop.run_once` ticks to accept connections without overflowing the listen backlog.
+    3. Verifies that all 10,000 connections are accepted, registered in epoll, and idle.
+    4. Proves I/O dispatch under full scale: while 10,000 connections stay idle, 3 clients (indices 0, 5,000, 9,999) send messages, and `EventLoop` ticks route reads, writes, and echoes back with exact byte matches.
+    5. Measures elapsed time and memory footprint (VmRSS from `/proc/self/status`): to be measured in CI.
+    6. Drops all clients, runs drain ticks until all connections are cleaned up and deregistered from epoll, and verifies that `ConnectionTable` is completely empty.
+
 
 
 

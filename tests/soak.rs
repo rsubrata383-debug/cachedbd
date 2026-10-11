@@ -333,3 +333,305 @@ fn test_ten_thousand_real_tcp_idle_connections() -> Result<(), Box<dyn std::erro
     drop(clients);
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+const LISTENER_TOKEN: cachedb::net::event_loop::Token = 0;
+
+#[cfg(target_os = "linux")]
+struct SoakEchoHandler {
+    listener: TcpListener,
+    connections: ConnectionTable<TcpStream>,
+}
+
+#[cfg(target_os = "linux")]
+impl SoakEchoHandler {
+    fn handle_accept(&mut self, event_loop: &mut cachedb::net::event_loop::EventLoop) {
+        loop {
+            match self.listener.accept() {
+                Ok((stream, peer_addr)) => {
+                    if let Err(err) = stream.set_nonblocking(true) {
+                        eprintln!("Failed to set client non-blocking: {err}");
+                        continue;
+                    }
+                    match self.connections.insert(stream, peer_addr) {
+                        Ok(token) => {
+                            if let Err(err) = self.connections.register_with_loop(token, event_loop)
+                            {
+                                eprintln!("Failed to register client {token}: {err}");
+                                self.connections.remove(token);
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("Connection rejected: {err}");
+                        }
+                    }
+                }
+                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => {}
+                Err(ref err) if err.kind() == io::ErrorKind::ConnectionAborted => {}
+                Err(err) => {
+                    eprintln!("Accept error: {err}");
+                    break;
+                }
+            }
+        }
+    }
+
+    fn handle_client_read(
+        &mut self,
+        token: cachedb::net::event_loop::Token,
+        event_loop: &mut cachedb::net::event_loop::EventLoop,
+    ) -> bool {
+        let Some(conn) = self.connections.get_mut(token) else {
+            return false;
+        };
+
+        loop {
+            match conn.read_incoming() {
+                Ok(cachedb::net::connection::ReadStatus::Eof) => {
+                    if conn.write_queue().is_empty() {
+                        self.connections.remove_and_deregister(token, event_loop);
+                        return false;
+                    }
+                    let _ = self.connections.sync_interest(token, event_loop);
+                    return self.handle_client_write(token, event_loop);
+                }
+                Ok(cachedb::net::connection::ReadStatus::WouldBlock) => break,
+                Ok(cachedb::net::connection::ReadStatus::Ok(n)) => {
+                    let data = conn.read_buffer().data().to_vec();
+                    if let Err(err) = conn.send_chunk(data) {
+                        eprintln!("Failed to enqueue echo payload for client {token}: {err}");
+                        self.connections.remove_and_deregister(token, event_loop);
+                        return false;
+                    }
+                    conn.read_buffer_mut().consume(n);
+                }
+                Err(err) => {
+                    eprintln!("I/O read error on client {token}: {err}");
+                    self.connections.remove_and_deregister(token, event_loop);
+                    return false;
+                }
+            }
+        }
+
+        self.handle_client_write(token, event_loop)
+    }
+
+    fn handle_client_write(
+        &mut self,
+        token: cachedb::net::event_loop::Token,
+        event_loop: &mut cachedb::net::event_loop::EventLoop,
+    ) -> bool {
+        let Some(conn) = self.connections.get_mut(token) else {
+            return false;
+        };
+
+        match conn.flush_outgoing() {
+            Ok(cachedb::net::connection::WriteStatus::Complete) => {
+                if conn.is_closed() {
+                    self.connections.remove_and_deregister(token, event_loop);
+                    return false;
+                }
+            }
+            Ok(cachedb::net::connection::WriteStatus::Pending(_)) => {}
+            Err(err) => {
+                eprintln!("I/O write error on client {token}: {err}");
+                self.connections.remove_and_deregister(token, event_loop);
+                return false;
+            }
+        }
+
+        let _ = self.connections.sync_interest(token, event_loop);
+        true
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl cachedb::net::event_loop::Handler for SoakEchoHandler {
+    fn on_event(
+        &mut self,
+        event_loop: &mut cachedb::net::event_loop::EventLoop,
+        token: cachedb::net::event_loop::Token,
+        flags: cachedb::net::sys::EpollFlags,
+    ) -> io::Result<()> {
+        if token == LISTENER_TOKEN {
+            self.handle_accept(event_loop);
+        } else {
+            let mut conn_alive = if flags.contains(cachedb::net::sys::EpollFlags::READABLE) {
+                self.handle_client_read(token, event_loop)
+            } else {
+                true
+            };
+            if conn_alive && flags.contains(cachedb::net::sys::EpollFlags::WRITABLE) {
+                conn_alive = self.handle_client_write(token, event_loop);
+            }
+            if conn_alive
+                && (flags.contains(cachedb::net::sys::EpollFlags::HANGUP)
+                    || flags.contains(cachedb::net::sys::EpollFlags::ERROR))
+            {
+                self.connections.remove_and_deregister(token, event_loop);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn get_vm_rss_kb() -> Option<u64> {
+    let content = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in content.lines() {
+        if line.starts_with("VmRSS:") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                return parts[1].parse().ok();
+            }
+        }
+    }
+    None
+}
+
+/// End-to-end stress test validating that the epoll EventLoop can coordinate
+/// 10,000 real concurrent TCP connections, route I/O while all connections remain
+/// idle, and drain cleanly on shutdown.
+#[test]
+#[cfg(target_os = "linux")]
+#[ignore = "requires ulimit -n >= 25,000"]
+// Integration soak benchmark spanning setup, batch connection, idle checks, echo, and drain.
+#[allow(clippy::too_many_lines)]
+fn test_ten_thousand_real_tcp_event_loop_idle_connections() -> Result<(), Box<dyn std::error::Error>>
+{
+    const TARGET_CONNECTIONS: usize = 10_000;
+    const BATCH_SIZE: usize = 200;
+
+    let mut event_loop = cachedb::net::event_loop::EventLoop::new()?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let addr = listener.local_addr()?;
+
+    event_loop.register(
+        cachedb::net::sys::as_raw_fd(&listener),
+        LISTENER_TOKEN,
+        cachedb::net::sys::EpollFlags::READABLE,
+    )?;
+
+    let connections = ConnectionTable::<TcpStream>::with_max_connections(TARGET_CONNECTIONS);
+    let mut handler = SoakEchoHandler {
+        listener,
+        connections,
+    };
+
+    let rss_before = get_vm_rss_kb();
+    let connect_start = Instant::now();
+    let mut clients = Vec::with_capacity(TARGET_CONNECTIONS);
+
+    // Connect 10,000 real clients in batches of 200 to prevent listen backlog overflow.
+    for _ in 0..(TARGET_CONNECTIONS / BATCH_SIZE) {
+        for _ in 0..BATCH_SIZE {
+            let client = TcpStream::connect(addr)?;
+            client.set_nonblocking(true)?;
+            clients.push(client);
+        }
+        let batch_deadline = Instant::now() + Duration::from_secs(10);
+        while handler.connections.len() < clients.len() {
+            event_loop.run_once(&mut handler, Some(Duration::from_millis(10)))?;
+            assert!(
+                Instant::now() < batch_deadline,
+                "Timed out accepting connections in batch: accepted {} / {}",
+                handler.connections.len(),
+                clients.len()
+            );
+        }
+    }
+
+    let connect_elapsed = connect_start.elapsed();
+    let rss_after = get_vm_rss_kb();
+
+    // Verify all 10,000 are accepted, registered in epoll, and idle.
+    assert_eq!(handler.connections.len(), TARGET_CONNECTIONS);
+    assert!(handler.connections.is_at_capacity());
+    thread::sleep(Duration::from_millis(50));
+    let idle = handler.connections.idle_tokens(Duration::from_millis(20));
+    assert_eq!(
+        idle.len(),
+        TARGET_CONNECTIONS,
+        "Expected all 10,000 connections to be registered and idle"
+    );
+
+    // While 10,000 stay idle, pick 3 clients, send messages, and verify each gets echoed back.
+    let test_indices = [0, 5_000, 9_999];
+    let test_payloads = [
+        b"ping-from-client-0\n".to_vec(),
+        b"ping-from-client-5000\n".to_vec(),
+        b"ping-from-client-9999\n".to_vec(),
+    ];
+
+    for (&idx, payload) in test_indices.iter().zip(test_payloads.iter()) {
+        clients[idx].write_all(payload)?;
+    }
+
+    let mut responses: Vec<Vec<u8>> = vec![Vec::new(); 3];
+    let echo_deadline = Instant::now() + Duration::from_secs(10);
+
+    while responses
+        .iter()
+        .zip(test_payloads.iter())
+        .any(|(r, p)| r.len() < p.len())
+    {
+        event_loop.run_once(&mut handler, Some(Duration::from_millis(10)))?;
+        for (i, &idx) in test_indices.iter().enumerate() {
+            if responses[i].len() < test_payloads[i].len() {
+                let mut buf = [0u8; 128];
+                match clients[idx].read(&mut buf) {
+                    Ok(n) if n > 0 => responses[i].extend_from_slice(&buf[..n]),
+                    Ok(_) => {}
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+        assert!(
+            Instant::now() < echo_deadline,
+            "Timed out waiting for 3 echo responses during 10,000 idle connection test"
+        );
+    }
+
+    for (i, &idx) in test_indices.iter().enumerate() {
+        assert_eq!(
+            responses[i], test_payloads[i],
+            "Client {idx} received mismatched echo payload"
+        );
+    }
+
+    // Print benchmark timings and memory accounting.
+    println!("=== 10,000 Real TCP EventLoop Soak Benchmark (Linux) ===");
+    println!("Connected and accepted 10,000 real TCP clients in {connect_elapsed:?}");
+    match (rss_before, rss_after) {
+        (Some(before), Some(after)) => {
+            let delta = after.saturating_sub(before);
+            let per_conn = (delta as f64) / (TARGET_CONNECTIONS as f64);
+            println!(
+                "VmRSS memory: before = {before} kB, after = {after} kB, delta = {delta} kB (~{per_conn:.2} kB/conn)"
+            );
+        }
+        _ => {
+            println!("VmRSS memory: /proc/self/status unavailable");
+        }
+    }
+
+    // Close all clients, run ticks, and verify the connection table is completely empty.
+    drop(clients);
+
+    let drain_deadline = Instant::now() + Duration::from_secs(15);
+    while !handler.connections.is_empty() {
+        event_loop.run_once(&mut handler, Some(Duration::from_millis(10)))?;
+        assert!(
+            Instant::now() < drain_deadline,
+            "Timed out draining connections: {} still active in table",
+            handler.connections.len()
+        );
+    }
+    assert_eq!(handler.connections.len(), 0);
+    assert!(handler.connections.is_empty());
+
+    Ok(())
+}
