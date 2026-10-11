@@ -829,6 +829,33 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - *Memory amplification*: A 64 MB payload of Nil items could create tens of millions of `Value`s (memory amplification). We need an item-count limit or a total-items budget in spec v0.2 / server config.
   - *Map forward compatibility*: When either the key or value in a Map pair uses an unknown tag `>= 0x09`, our parser currently skips the entire pair. Spec v0.2 should formally clarify whether partial pairs are discarded or whether Map keys must always belong to a restricted scalar type set.
 
+---
+
+## 2026-10-11: Week 5 Step 4: Frame Encode/Decode
+
+- **Date**: 2026-10-11
+- **Summary**: Implemented binary `Frame` representation, atomic frame encoding with payload size enforcement (`encode_frame`), and streaming zero-copy frame parsing with partial-read pipelining (`decode_frame`).
+- **Part A Findings**:
+  1. *Unknown tags*: Top-level unknown tags return `ERR_UNKNOWN_TYPE_TAG` (`1007`) when decoded as standalone values; inside an `Array`, unknown tags are skipped using their varint length prefix per Section 4.3, resulting in an in-memory `Array` whose element count is smaller than the wire item count.
+  2. *Error 1007 occurrence*: `errors.md` defines 1007 for "unrecognized type tag byte without length prefix". Because Section 4.3 stipulates that all future tags ($\ge 0x09$) include length prefixes, 1007 is returned when standalone AST deserialization encounters an unrepresentable tag.
+  3. *8 Spec Examples*: Added round-trip tests for all 8 examples in `docs/spec/protocol.md` Section 10; wire bytes match hex identically and decode back to identical frames.
+  4. *Map Keys*: Neither `protocol.md` nor `values.md` specifies restrictions on key types or duplicate keys.
+- **Part B Step 0 Findings**:
+  1. *Payload structure*: In all spec examples, the payload consists of exactly one top-level typed item whose encoded size equals `payload_len`.
+  2. *Payload length 0*: Undefined in spec; fails item decoding with `ERR_MALFORMED_PAYLOAD` (`1006`) because even `Nil` requires 1 byte.
+  3. *HELLO / COMMAND / PUSH payloads*: HELLO request is `Array(3)` and response is `Map`; COMMAND request is `Array` of arguments and response is a typed `Value` or `Error`; PUSH is `Array`.
+  4. *Legal flag combinations*: `0x00` (Request), `0x01` (Response), `0x03` (Error Response), `0x05` (Push). Bit 3 (`FLAG_MORE_FRAMES`) and bits 4–7 are reserved.
+  5. *Fatal protocol errors*: All 1xxx errors (1001–1007), replication stream failures (6002, 6003), and shutdown (7004) close the TCP connection immediately.
+- **What Was Added**:
+  - `src/proto/mod.rs`: `Frame { header: Header, payload: Value }`.
+  - `src/proto/encode.rs`: `encode_frame` and `encode_frame_with_limit` (atomic: truncates buffer to original length on failure; enforces max payload 64 MB).
+  - `src/proto/decode.rs`: `decode_frame` and `decode_frame_with_limit` (stateless, zero-copy, returns `NeedMore` on incomplete header or payload; rejects invalid headers immediately after 14 bytes; rejects trailing bytes in payload with `1006`).
+  - Unit tests: pipelining, exhaustive split reads across all byte offsets, byte-by-byte streaming, trailing payload rejection, 300 random frame chunked round-trips, and 6,000 fuzz samples without panics.
+- **Open Questions**:
+  - Should duplicate Map keys be rejected or last-write-wins in spec v0.2?
+  - Does spec v0.2 plan to define multi-item root payloads or formally restrict root payloads to exactly one item?
+
+
 
 
 

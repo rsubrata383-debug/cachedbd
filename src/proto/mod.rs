@@ -15,6 +15,27 @@ pub enum Decoded<T> {
     Complete(T),
 }
 
+/// A complete Cachedb wire protocol frame consisting of a 14-byte header and a typed payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frame {
+    /// 14-byte wire protocol header.
+    pub header: Header,
+    /// Typed payload value.
+    pub payload: Value,
+}
+
+impl Frame {
+    /// Creates a new frame with the specified header and payload.
+    ///
+    /// The `payload_len` in `header` is dynamically computed and updated during encoding.
+    #[must_use]
+    pub const fn new(header: Header, payload: Value) -> Self {
+        Self { header, payload }
+    }
+}
+
+pub use decode::{decode_frame, decode_frame_with_limit};
+pub use encode::{encode_frame, encode_frame_with_limit};
 pub use header::{
     DEFAULT_MAX_PAYLOAD_LEN, DecodedHeader, FLAG_ERROR, FLAG_MORE_FRAMES, FLAG_PUSH, FLAG_RESPONSE,
     HEADER_LEN, Header, MAGIC, Opcode, ProtoError, VERSION,
