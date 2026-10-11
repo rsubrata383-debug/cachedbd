@@ -105,6 +105,9 @@ impl ReadBuffer {
         if self.read_pos == self.write_pos {
             self.read_pos = 0;
             self.write_pos = 0;
+            if self.buf.len() > 64 * 1024 {
+                self.buf = vec![0u8; DEFAULT_INITIAL_READ_CAPACITY];
+            }
         }
     }
 
@@ -119,9 +122,14 @@ impl ReadBuffer {
     }
 
     /// Discards all buffered data and resets the read and write positions to zero.
+    ///
+    /// If capacity exceeds 64 KB, shrinks memory back to the initial capacity.
     pub fn clear(&mut self) {
         self.read_pos = 0;
         self.write_pos = 0;
+        if self.buf.len() > 64 * 1024 {
+            self.buf = vec![0u8; DEFAULT_INITIAL_READ_CAPACITY];
+        }
     }
 
     /// Ensures that at least `additional` bytes of contiguous free space are available
@@ -381,7 +389,18 @@ impl WriteQueue {
         while let Some(front) = self.chunks.front() {
             let pending_slice = &front[self.front_offset..];
             match writer.write(pending_slice) {
-                Ok(0) => break,
+                Ok(0) => {
+                    if self.total_bytes <= self.low_watermark {
+                        self.backpressured = false;
+                    }
+                    if total_written > 0 {
+                        return Ok(total_written);
+                    }
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "failed to write any bytes to stream",
+                    ));
+                }
                 Ok(n) => {
                     total_written += n;
                     self.total_bytes = self.total_bytes.saturating_sub(n);
@@ -850,6 +869,55 @@ mod tests {
         let contiguous = ring.make_contiguous();
         assert_eq!(contiguous, b"6789abcdefghij");
         assert!(!ring.is_wrapped());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_buffer_shrink_on_empty() -> io::Result<()> {
+        let mut rb = ReadBuffer::new();
+        // Expand buffer beyond 64 KB (e.g. 128 KB).
+        rb.reserve(128 * 1024)?;
+        assert!(rb.capacity() >= 128 * 1024);
+
+        // Put some bytes in and consume them all.
+        let mut cursor = io::Cursor::new(vec![b'A'; 100]);
+        rb.read_from(&mut cursor)?;
+        assert_eq!(rb.len(), 100);
+
+        rb.consume(100);
+        assert_eq!(rb.len(), 0);
+        // Capacity should have shrunk back to default initial capacity (4096).
+        assert_eq!(rb.capacity(), DEFAULT_INITIAL_READ_CAPACITY);
+
+        // Also test clear() shrinking.
+        rb.reserve(128 * 1024)?;
+        assert!(rb.capacity() >= 128 * 1024);
+        rb.clear();
+        assert_eq!(rb.capacity(), DEFAULT_INITIAL_READ_CAPACITY);
+
+        Ok(())
+    }
+
+    struct ZeroWriter;
+    impl Write for ZeroWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_write_queue_write_zero_error() -> io::Result<()> {
+        let mut wq = WriteQueue::new();
+        wq.enqueue(b"test chunk")?;
+
+        let mut writer = ZeroWriter;
+        let res = wq.write_to(&mut writer);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().kind(), io::ErrorKind::WriteZero);
 
         Ok(())
     }

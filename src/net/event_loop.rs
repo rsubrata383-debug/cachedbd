@@ -22,12 +22,23 @@ pub type TimerId = u64;
 /// Handlers are called sequentially on the single main thread. Because all calls
 /// are synchronous and single-threaded, handlers do not require synchronization
 /// primitives such as `Mutex`, `RwLock`, or `Arc`.
+///
+/// # Error Handling Policy
+///
+/// Returning an `Err` from [`Handler::on_event`] or [`Handler::on_timeout`] propagates
+/// immediately out of [`EventLoop::run_once`] and [`EventLoop::run`], terminating the entire
+/// event loop. Handlers MUST handle per-connection I/O errors (such as unexpected resets,
+/// peer disconnects, or buffer exhaustion) internally—typically by closing and deregistering
+/// the affected client socket—and return `Ok(())`. Handlers should return `Err` ONLY for
+/// truly unrecoverable, fatal server-wide conditions (e.g. storage corruption).
 pub trait Handler {
     /// Invoked when a registered socket file descriptor becomes ready for I/O.
     ///
     /// # Errors
     ///
-    /// May return an [`io::Error`] if processing the event encounters an unrecoverable I/O failure.
+    /// Returning an [`io::Error`] terminates the entire event loop. Per-connection
+    /// I/O failures MUST be handled internally by deregistering the affected client and
+    /// returning `Ok(())`.
     fn on_event(
         &mut self,
         event_loop: &mut EventLoop,
@@ -74,17 +85,25 @@ pub struct EventLoop {
     timers: BinaryHeap<TimerEntry>,
     events_buffer: Vec<Event>,
     running: bool,
+    shutdown_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl EventLoop {
     /// Capacity of the pre-allocated event buffer for receiving batch readiness notifications.
     const DEFAULT_EVENT_CAPACITY: usize = 64;
 
+    /// Maximum duration (in milliseconds) the event loop will block in `epoll_wait`.
+    ///
+    /// Capping the poll timeout to 100 ms prevents indefinite blocking when a signal
+    /// arrives in the race window between the shutdown check and entering kernel sleep.
+    const MAX_POLL_TIMEOUT_MS: i32 = 100;
+
     /// Creates a new `EventLoop` instance backed by the operating system's polling subsystem.
     ///
     /// # Errors
     ///
-    /// Returns an [`io::Error`] if the underlying polling facility cannot be initialized.
+    /// Returns an [`io::Error`] if the underlying polling facility cannot be initialized
+    /// (e.g. returns [`io::ErrorKind::Unsupported`] on non-Linux platforms).
     pub fn new() -> io::Result<Self> {
         let epoll = Epoll::create()?;
         let events_buffer = vec![Event::new(EpollFlags::empty(), 0); Self::DEFAULT_EVENT_CAPACITY];
@@ -94,7 +113,55 @@ impl EventLoop {
             timers: BinaryHeap::new(),
             events_buffer,
             running: false,
+            shutdown_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
+    }
+
+    /// Returns a thread-safe shared handle to request graceful shutdown of this event loop instance.
+    #[must_use]
+    pub fn shutdown_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.shutdown_flag)
+    }
+
+    /// Requests graceful shutdown of this specific event loop instance.
+    pub fn request_shutdown(&self) {
+        self.shutdown_flag
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns `true` if graceful shutdown was requested on this loop instance or via signal flag.
+    #[must_use]
+    pub fn is_shutdown_requested(&self) -> bool {
+        self.shutdown_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || is_shutdown_requested()
+    }
+
+    /// Computes the millisecond timeout for `epoll_wait`, rounding sub-millisecond durations up.
+    ///
+    /// # Behavior
+    ///
+    /// - `None`: returns `-1` (infinite wait requested, will be clamped by `MAX_POLL_TIMEOUT_MS`).
+    /// - `Some(0)`: returns `0` (immediate non-blocking poll).
+    /// - `Some(dur)` with `dur > 0`: ceiling-divided to milliseconds, returning at least `1`.
+    #[must_use]
+    pub fn compute_timeout_ms(timeout: Option<Duration>) -> i32 {
+        match timeout {
+            Some(dur) => {
+                if dur.is_zero() {
+                    0
+                } else {
+                    let micros = dur.as_micros();
+                    let ms_ceil = (micros.saturating_add(999) / 1000).max(1);
+                    if ms_ceil > i32::MAX as u128 {
+                        i32::MAX
+                    } else {
+                        ms_ceil as i32
+                    }
+                }
+            }
+            None => -1,
+        }
     }
 
     /// Registers a socket file descriptor with the event loop.
@@ -171,7 +238,7 @@ impl EventLoop {
         timeout: Option<Duration>,
         allow_drain: bool,
     ) -> io::Result<usize> {
-        if !allow_drain && is_shutdown_requested() {
+        if !allow_drain && self.is_shutdown_requested() {
             self.stop();
             return Ok(0);
         }
@@ -191,30 +258,18 @@ impl EventLoop {
             (None, None) => None,
         };
 
-        // Convert duration to milliseconds for epoll_wait (-1 = infinite block).
-        let timeout_ms = match effective_timeout {
-            Some(dur) => {
-                let ms = dur.as_millis();
-                if ms > i32::MAX as u128 {
-                    i32::MAX
-                } else {
-                    ms as i32
-                }
-            }
-            None => -1,
+        // Round up sub-millisecond durations and clamp to MAX_POLL_TIMEOUT_MS:
+        let raw_timeout_ms = Self::compute_timeout_ms(effective_timeout);
+        let timeout_ms = if (0..=Self::MAX_POLL_TIMEOUT_MS).contains(&raw_timeout_ms) {
+            raw_timeout_ms
+        } else {
+            Self::MAX_POLL_TIMEOUT_MS
         };
 
-        // 1. Poll kernel for I/O readiness events.
-        let num_events = match self.epoll.wait(&mut self.events_buffer, timeout_ms) {
-            Ok(n) => n,
-            Err(err) if err.kind() == io::ErrorKind::Unsupported => {
-                // Non-Linux platforms or mock environment where real epoll is unavailable.
-                0
-            }
-            Err(err) => return Err(err),
-        };
+        // 1. Poll kernel for I/O readiness events with zero per-tick allocation.
+        let num_events = self.epoll.wait(&mut self.events_buffer, timeout_ms)?;
 
-        if !allow_drain && is_shutdown_requested() {
+        if !allow_drain && self.is_shutdown_requested() {
             self.stop();
             return Ok(0);
         }
@@ -254,7 +309,7 @@ impl EventLoop {
     pub fn run<H: Handler>(&mut self, handler: &mut H) -> io::Result<()> {
         self.running = true;
         while self.running {
-            if is_shutdown_requested() {
+            if self.is_shutdown_requested() {
                 self.stop();
                 break;
             }
@@ -285,11 +340,13 @@ impl EventLoop {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     struct MockHandler {
         events: Vec<(Token, EpollFlags)>,
         timeouts: Vec<TimerId>,
     }
 
+    #[cfg(target_os = "linux")]
     impl MockHandler {
         fn new() -> Self {
             Self {
@@ -299,6 +356,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     impl Handler for MockHandler {
         fn on_event(
             &mut self,
@@ -317,12 +375,43 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_timeout_ms_rounding_and_limits() {
+        // Zero duration becomes 0 ms (immediate poll)
+        assert_eq!(EventLoop::compute_timeout_ms(Some(Duration::ZERO)), 0);
+
+        // Sub-millisecond (500 micros) must round up to 1 ms, NOT truncate to 0!
+        assert_eq!(
+            EventLoop::compute_timeout_ms(Some(Duration::from_micros(500))),
+            1
+        );
+        assert_eq!(
+            EventLoop::compute_timeout_ms(Some(Duration::from_nanos(1))),
+            1
+        );
+
+        // Exact millisecond values
+        assert_eq!(
+            EventLoop::compute_timeout_ms(Some(Duration::from_millis(5))),
+            5
+        );
+        assert_eq!(
+            EventLoop::compute_timeout_ms(Some(Duration::from_micros(5001))),
+            6
+        );
+
+        // None duration becomes -1 (infinite poll request)
+        assert_eq!(EventLoop::compute_timeout_ms(None), -1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn test_event_loop_creation() -> io::Result<()> {
         let el = EventLoop::new()?;
         assert!(!el.is_running());
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_timer_scheduling_and_dispatch() -> io::Result<()> {
         let mut el = EventLoop::new()?;
@@ -341,6 +430,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_event_loop_stop() -> io::Result<()> {
         let mut el = EventLoop::new()?;
@@ -359,6 +449,23 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_event_loop_instance_shutdown_flag() -> io::Result<()> {
+        let mut el = EventLoop::new()?;
+        let mut handler = MockHandler::new();
+
+        // Request shutdown on loop instance without touching global signal flag:
+        el.request_shutdown();
+        assert!(el.is_shutdown_requested());
+        assert!(!crate::net::sys::is_shutdown_requested());
+
+        el.run(&mut handler)?;
+        assert!(!el.is_running());
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_event_loop_graceful_shutdown_flag() -> io::Result<()> {
         let mut el = EventLoop::new()?;
@@ -371,5 +478,13 @@ mod tests {
         // Reset the flag for other tests.
         crate::net::sys::reset_shutdown();
         Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_event_loop_unsupported_on_non_linux() {
+        let res = EventLoop::new();
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().kind(), io::ErrorKind::Unsupported);
     }
 }

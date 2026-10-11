@@ -30,6 +30,8 @@ fn test_blocking_echo_server_round_trip() -> Result<(), Box<dyn std::error::Erro
 
     // Connect from the test client.
     let mut client = TcpStream::connect(addr)?;
+    client.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+    client.set_write_timeout(Some(std::time::Duration::from_secs(3)))?;
 
     // Send payload 1.
     let message_1 = b"hello, cachedb blocking echo server!";
@@ -62,11 +64,23 @@ fn test_blocking_echo_server_round_trip() -> Result<(), Box<dyn std::error::Erro
 #[path = "../examples/echo_nonblocking.rs"]
 mod echo_nonblocking;
 
+#[cfg(target_os = "linux")]
 #[test]
 fn test_nonblocking_echo_server_creation() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let server = echo_nonblocking::NonBlockingEchoServer::new(listener)?;
     assert_eq!(server.client_count(), 0);
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn test_nonblocking_echo_server_creation_unsupported_on_non_linux()
+-> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let res = echo_nonblocking::NonBlockingEchoServer::new(listener);
+    assert!(res.is_err());
+    assert_eq!(res.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
     Ok(())
 }
 
@@ -85,11 +99,15 @@ fn test_nonblocking_echo_server_concurrent_clients() -> Result<(), Box<dyn std::
 
     // Client 1 connects and sends payload.
     let mut client1 = TcpStream::connect(addr)?;
+    client1.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+    client1.set_write_timeout(Some(std::time::Duration::from_secs(3)))?;
     let msg1 = b"hello from client 1";
     client1.write_all(msg1)?;
 
     // Client 2 connects concurrently while Client 1 is still connected!
     let mut client2 = TcpStream::connect(addr)?;
+    client2.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+    client2.set_write_timeout(Some(std::time::Duration::from_secs(3)))?;
     let msg2 = b"hello from client 2 concurrent";
     client2.write_all(msg2)?;
 
@@ -111,6 +129,7 @@ fn test_nonblocking_echo_server_concurrent_clients() -> Result<(), Box<dyn std::
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn test_event_loop_shutdown_via_signal_flag() -> Result<(), Box<dyn std::error::Error>> {
     use cachedb::net::event_loop::{EventLoop, Handler, Token};
@@ -147,6 +166,7 @@ fn test_event_loop_shutdown_via_signal_flag() -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn test_connection_table_backpressure_interest_toggling() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -193,6 +213,7 @@ fn test_connection_table_backpressure_interest_toggling() -> Result<(), Box<dyn 
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn test_connection_table_capacity_and_shutdown_drain() -> Result<(), Box<dyn std::error::Error>> {
     use cachedb::net::connection::ConnectionTable;
@@ -289,7 +310,11 @@ fn test_nonblocking_echo_server_limits_and_idle_timeout() -> Result<(), Box<dyn 
 
     // Connect client 1 and client 2.
     let mut client1 = TcpStream::connect(addr)?;
+    client1.set_read_timeout(Some(Duration::from_secs(3)))?;
+    client1.set_write_timeout(Some(Duration::from_secs(3)))?;
     let mut client2 = TcpStream::connect(addr)?;
+    client2.set_read_timeout(Some(Duration::from_secs(3)))?;
+    client2.set_write_timeout(Some(Duration::from_secs(3)))?;
 
     // Send data on client 1.
     client1.write_all(b"ping")?;
@@ -299,6 +324,8 @@ fn test_nonblocking_echo_server_limits_and_idle_timeout() -> Result<(), Box<dyn 
 
     // Connect client 3: should be rejected by server.
     let client3 = TcpStream::connect(addr)?;
+    client3.set_read_timeout(Some(Duration::from_secs(3)))?;
+    client3.set_write_timeout(Some(Duration::from_secs(3)))?;
     // Sleep briefly to let server sweep and disconnect idle client 2.
     thread::sleep(Duration::from_millis(150));
 

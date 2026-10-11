@@ -126,12 +126,17 @@ impl Event {
 pub struct Epoll {
     #[cfg(target_os = "linux")]
     fd: RawFd,
+    #[cfg(target_os = "linux")]
+    raw_events: Vec<libc::epoll_event>,
     #[cfg(not(target_os = "linux"))]
     _mock_token: u64,
 }
 
 #[cfg(target_os = "linux")]
 impl Epoll {
+    /// Initial capacity for the pre-allocated raw kernel events buffer.
+    const INITIAL_RAW_EVENTS_CAPACITY: usize = 64;
+
     /// Creates a new `epoll` instance with close-on-exec (`EPOLL_CLOEXEC`) enabled.
     ///
     /// # Errors
@@ -144,7 +149,13 @@ impl Epoll {
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { fd })
+        Ok(Self {
+            fd,
+            raw_events: vec![
+                libc::epoll_event { events: 0, u64: 0 };
+                Self::INITIAL_RAW_EVENTS_CAPACITY
+            ],
+        })
     }
 
     /// Adds a file descriptor to the interest list.
@@ -183,20 +194,29 @@ impl Epoll {
 
     /// Waits for readiness events on the registered file descriptors.
     ///
+    /// Reuses an internal pre-allocated buffer so this call does not allocate on every invocation.
+    ///
     /// # Errors
     ///
     /// Returns an [`io::Error`] if `epoll_wait` fails. If interrupted by a signal (`EINTR`),
     /// this function handles it gracefully and returns `Ok(0)`.
-    pub fn wait(&self, events: &mut [Event], timeout_ms: i32) -> io::Result<usize> {
-        let mut raw_events = vec![libc::epoll_event { events: 0, u64: 0 }; events.len()];
+    pub fn wait(&mut self, events: &mut [Event], timeout_ms: i32) -> io::Result<usize> {
+        if events.is_empty() {
+            return Ok(0);
+        }
 
-        // SAFETY: `raw_events` is a properly allocated buffer with length `events.len()`.
+        if self.raw_events.len() < events.len() {
+            self.raw_events
+                .resize(events.len(), libc::epoll_event { events: 0, u64: 0 });
+        }
+
+        // SAFETY: `self.raw_events` is a properly sized buffer with capacity >= `events.len()`.
         // `self.fd` is an open epoll descriptor owned by `self`.
         let count = unsafe {
             libc::epoll_wait(
                 self.fd,
-                raw_events.as_mut_ptr(),
-                raw_events.len() as libc::c_int,
+                self.raw_events.as_mut_ptr(),
+                events.len() as libc::c_int,
                 timeout_ms,
             )
         };
@@ -211,7 +231,7 @@ impl Epoll {
 
         let num_ready = count as usize;
         for i in 0..num_ready {
-            events[i] = Self::from_raw_event(&raw_events[i]);
+            events[i] = Self::from_raw_event(&self.raw_events[i]);
         }
 
         Ok(num_ready)
@@ -283,49 +303,64 @@ impl Drop for Epoll {
 
 #[cfg(not(target_os = "linux"))]
 impl Epoll {
-    /// Creates a mock epoll instance for non-Linux compilation.
+    /// Creates an epoll instance (unsupported on non-Linux).
     ///
     /// # Errors
     ///
-    /// On non-Linux targets, native kernel epoll is not available.
+    /// Returns [`io::ErrorKind::Unsupported`] on non-Linux platforms where `epoll` is unavailable.
     pub fn create() -> io::Result<Self> {
-        Ok(Self { _mock_token: 0 })
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "epoll kernel subsystem is only available on Linux (use WSL2 on Windows)",
+        ))
     }
 
     /// Adds a file descriptor to the interest list (stub on non-Linux).
     ///
     /// # Errors
     ///
-    /// Never returns an error in mock mode.
+    /// Returns [`io::ErrorKind::Unsupported`].
     pub fn add(&self, _fd: RawFd, _flags: EpollFlags, _token: u64) -> io::Result<()> {
-        Ok(())
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "epoll is only available on Linux",
+        ))
     }
 
     /// Modifies a file descriptor in the interest list (stub on non-Linux).
     ///
     /// # Errors
     ///
-    /// Never returns an error in mock mode.
+    /// Returns [`io::ErrorKind::Unsupported`].
     pub fn modify(&self, _fd: RawFd, _flags: EpollFlags, _token: u64) -> io::Result<()> {
-        Ok(())
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "epoll is only available on Linux",
+        ))
     }
 
     /// Deletes a file descriptor from the interest list (stub on non-Linux).
     ///
     /// # Errors
     ///
-    /// Never returns an error in mock mode.
+    /// Returns [`io::ErrorKind::Unsupported`].
     pub fn delete(&self, _fd: RawFd) -> io::Result<()> {
-        Ok(())
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "epoll is only available on Linux",
+        ))
     }
 
-    /// Waits for readiness events (stub on non-Linux, returns 0 events).
+    /// Waits for readiness events (stub on non-Linux).
     ///
     /// # Errors
     ///
-    /// Never returns an error in mock mode.
-    pub fn wait(&self, _events: &mut [Event], _timeout_ms: i32) -> io::Result<usize> {
-        Ok(0)
+    /// Returns [`io::ErrorKind::Unsupported`].
+    pub fn wait(&mut self, _events: &mut [Event], _timeout_ms: i32) -> io::Result<usize> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "epoll is only available on Linux",
+        ))
     }
 }
 
@@ -394,6 +429,68 @@ pub fn install_shutdown_signal_handlers() -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+/// Sets `SO_LINGER` to 0 on a socket file descriptor so that closing it resets the connection immediately with TCP RST.
+///
+/// # Errors
+///
+/// Returns an [`io::Error`] if the underlying `setsockopt` syscall fails.
+pub fn set_linger_zero(fd: RawFd) -> io::Result<()> {
+    let linger = libc::linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    // SAFETY: `fd` is a valid raw descriptor. `&linger` points to a valid `libc::linger` struct
+    // with size matching `sizeof(libc::linger)`.
+    let res = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_LINGER,
+            &linger as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::linger>() as libc::socklen_t,
+        )
+    };
+    if res < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+/// Sets `SO_LINGER` to 0 on a socket so that closing it resets the connection immediately with TCP RST.
+///
+/// # Errors
+///
+/// Returns an [`io::Error`] if setting the socket option fails.
+pub fn set_linger_zero(socket: RawFd) -> io::Result<()> {
+    #[repr(C)]
+    struct Linger {
+        l_onoff: u16,
+        l_linger: u16,
+    }
+
+    // SAFETY: Declares the standard Winsock `setsockopt` function from Windows `ws2_32`.
+    unsafe extern "system" {
+        fn setsockopt(s: usize, level: i32, optname: i32, optval: *const i8, optlen: i32) -> i32;
+    }
+
+    let linger = Linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    let optlen = i32::try_from(std::mem::size_of::<Linger>()).unwrap_or(4);
+    let optval = std::ptr::from_ref(&linger).cast::<i8>();
+
+    // SAFETY: Winsock `setsockopt` is called with valid `SOL_SOCKET` (0xffff) and `SO_LINGER` (0x0080).
+    // `optval` points to a valid 4-byte `linger` struct with size matching `sizeof(Linger)`.
+    let res = unsafe { setsockopt(socket as usize, 0xffff, 0x0080, optval, optlen) };
+    if res != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -426,8 +523,11 @@ mod tests {
         assert!(!event.flags().contains(EpollFlags::WRITABLE));
     }
 
+    static TEST_SHUTDOWN_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_shutdown_flag_operations() {
+        let _guard = TEST_SHUTDOWN_MUTEX.lock().unwrap();
         reset_shutdown();
         assert!(!is_shutdown_requested());
 
@@ -440,5 +540,13 @@ mod tests {
         // Calling install_shutdown_signal_handlers should succeed.
         let result = install_shutdown_signal_handlers();
         assert!(result.is_ok());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_epoll_create_unsupported_on_non_linux() {
+        let res = Epoll::create();
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().kind(), io::ErrorKind::Unsupported);
     }
 }

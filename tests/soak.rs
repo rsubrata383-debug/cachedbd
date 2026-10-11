@@ -63,7 +63,7 @@ fn test_ten_thousand_idle_connections_scale_and_memory() -> Result<(), Box<dyn s
     assert_eq!(table.remaining_capacity(), TARGET_CONNECTIONS);
 
     let start_insert = Instant::now();
-    for i in 0..TARGET_CONNECTIONS {
+    for i in 1..=TARGET_CONNECTIONS {
         let stream = MockStream::default();
         let conn = Connection::new(i as u64, stream, dummy_addr);
         let token = table.insert_connection(conn)?;
@@ -79,7 +79,11 @@ fn test_ten_thousand_idle_connections_scale_and_memory() -> Result<(), Box<dyn s
     println!("Inserted {TARGET_CONNECTIONS} connections in {insert_elapsed:?}");
 
     // Verify rejection of 10,001st connection.
-    let overflow_conn = Connection::new(10_000, MockStream::default(), dummy_addr);
+    let overflow_conn = Connection::new(
+        (TARGET_CONNECTIONS + 1) as u64,
+        MockStream::default(),
+        dummy_addr,
+    );
     let overflow_err = table.insert_connection(overflow_conn).unwrap_err();
     assert_eq!(overflow_err.kind(), io::ErrorKind::ConnectionRefused);
 
@@ -113,14 +117,14 @@ fn test_ten_thousand_connections_lookup_and_touch() -> Result<(), Box<dyn std::e
     let dummy_addr: SocketAddr = "127.0.0.1:8080".parse()?;
 
     let mut table = ConnectionTable::<MockStream>::with_max_connections(TARGET_CONNECTIONS);
-    for i in 0..TARGET_CONNECTIONS {
+    for i in 1..=TARGET_CONNECTIONS {
         let conn = Connection::new(i as u64, MockStream::default(), dummy_addr);
         table.insert_connection(conn)?;
     }
 
     let lookup_start = Instant::now();
     // Lookup every 10th connection (1,000 lookups).
-    for i in (0..TARGET_CONNECTIONS).step_by(10) {
+    for i in (1..=TARGET_CONNECTIONS).step_by(10) {
         let token = i as u64;
         let conn = table.get(token).expect("connection must exist");
         assert_eq!(conn.id(), token);
@@ -129,9 +133,14 @@ fn test_ten_thousand_connections_lookup_and_touch() -> Result<(), Box<dyn std::e
     }
     let lookup_elapsed = lookup_start.elapsed();
     println!("1,000 lookups across 10,000 connections took {lookup_elapsed:?}");
+    // Generous upper-bound timing assertion to avoid flakiness under CI load
+    assert!(
+        lookup_elapsed < Duration::from_millis(100),
+        "1,000 lookups exceeded generous 100ms threshold: {lookup_elapsed:?}"
+    );
 
     // Mutably touch 500 connections.
-    for i in (0..TARGET_CONNECTIONS).step_by(20) {
+    for i in (1..=TARGET_CONNECTIONS).step_by(20) {
         let token = i as u64;
         if let Some(conn) = table.get_mut(token) {
             conn.touch();
@@ -152,7 +161,7 @@ fn test_ten_thousand_connections_idle_sweep_performance() -> Result<(), Box<dyn 
     let now = Instant::now();
     let idle_threshold = Duration::from_secs(60);
 
-    for i in 0..TARGET_CONNECTIONS {
+    for i in 1..=TARGET_CONNECTIONS {
         let mut conn = Connection::new(i as u64, MockStream::default(), dummy_addr);
         // Even tokens are set to 100 seconds ago (idle), odd tokens set to now (active).
         if i % 2 == 0 {
@@ -172,6 +181,11 @@ fn test_ten_thousand_connections_idle_sweep_performance() -> Result<(), Box<dyn 
     let sweep_elapsed = sweep_start.elapsed();
 
     println!("Swept 10,000 connections in {sweep_elapsed:?}");
+    // Generous upper-bound timing assertion to verify fast sweep without CI flakiness
+    assert!(
+        sweep_elapsed < Duration::from_millis(100),
+        "Idle sweep exceeded generous 100ms threshold: {sweep_elapsed:?}"
+    );
 
     // Exactly 5,000 even-indexed connections were idle.
     assert_eq!(idle_tokens.len(), 5_000);
@@ -183,7 +197,7 @@ fn test_ten_thousand_connections_idle_sweep_performance() -> Result<(), Box<dyn 
     assert_eq!(table.remaining_capacity(), 5_000);
 
     // Verify all remaining connections are the active odd ones.
-    for i in (1..TARGET_CONNECTIONS).step_by(2) {
+    for i in (1..=TARGET_CONNECTIONS).step_by(2) {
         assert!(table.contains(i as u64));
     }
 
@@ -192,12 +206,12 @@ fn test_ten_thousand_connections_idle_sweep_performance() -> Result<(), Box<dyn 
 
 /// Validates teardown and drain performance over 10,000 connections.
 #[test]
-fn test_ten_thousand_connections_shutdown_teardown() -> Result<(), Box<dyn std::error::Error>> {
+fn test_ten_thousand_connections_drain_teardown() -> Result<(), Box<dyn std::error::Error>> {
     const TARGET_CONNECTIONS: usize = 10_000;
     let dummy_addr: SocketAddr = "127.0.0.1:8080".parse()?;
 
     let mut table = ConnectionTable::<MockStream>::with_max_connections(TARGET_CONNECTIONS);
-    for i in 0..TARGET_CONNECTIONS {
+    for i in 1..=TARGET_CONNECTIONS {
         let conn = Connection::new(i as u64, MockStream::default(), dummy_addr);
         table.insert_connection(conn)?;
     }
@@ -205,13 +219,17 @@ fn test_ten_thousand_connections_shutdown_teardown() -> Result<(), Box<dyn std::
 
     // Drain all 10,000 connections.
     let drain_start = Instant::now();
-    for i in 0..TARGET_CONNECTIONS {
+    for i in 1..=TARGET_CONNECTIONS {
         let conn = table.remove(i as u64);
         assert!(conn.is_some());
     }
     let drain_elapsed = drain_start.elapsed();
 
     println!("Drained and removed 10,000 connections in {drain_elapsed:?}");
+    assert!(
+        drain_elapsed < Duration::from_millis(200),
+        "Draining 10,000 connections exceeded 200ms threshold: {drain_elapsed:?}"
+    );
     assert!(table.is_empty());
     assert_eq!(table.remaining_capacity(), TARGET_CONNECTIONS);
 

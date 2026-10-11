@@ -5,7 +5,7 @@
 
 ---
 
-`cachedb` is a high-performance, single-threaded, event-driven, in-memory key-value data store built from the ground up in Rust. Designed as a modern, educational, and production-grade alternative to systems like Redis and Memcached, it features its own custom binary wire protocol, command dispatch engine, streaming I/O buffers, and write-ahead persistence layer.
+`cachedb` is a high-performance, single-threaded, event-driven, in-memory key-value data store built from the ground up in Rust. Designed for predictable sub-millisecond latencies and high concurrency, it features its own custom binary wire protocol, command dispatch engine, streaming I/O buffers, and write-ahead persistence layer.
 
 Target workloads include:
 - Low-latency **caching** and **session stores**

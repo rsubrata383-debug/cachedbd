@@ -259,19 +259,31 @@ impl<S: Read> Connection<S> {
             return Ok(ReadStatus::Eof);
         }
 
-        match self.read_buf.read_from(&mut self.stream) {
-            Ok(0) => {
-                // Clean EOF from remote peer.
-                self.is_closed = true;
-                Ok(ReadStatus::Eof)
+        loop {
+            match self.read_buf.read_from(&mut self.stream) {
+                Ok(0) => {
+                    // Clean EOF from remote peer.
+                    // If output bytes remain in the write queue, mark closing so they can flush.
+                    // If write queue is empty, close immediately.
+                    if self.write_queue.is_empty() {
+                        self.is_closed = true;
+                    } else {
+                        self.is_closing = true;
+                    }
+                    return Ok(ReadStatus::Eof);
+                }
+                Ok(n) => {
+                    self.last_active = Instant::now();
+                    return Ok(ReadStatus::Ok(n));
+                }
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+                    // Retry on interrupted syscall to avoid losing edge-triggered wakeups.
+                }
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    return Ok(ReadStatus::WouldBlock);
+                }
+                Err(err) => return Err(err),
             }
-            Ok(n) => {
-                self.last_active = Instant::now();
-                Ok(ReadStatus::Ok(n))
-            }
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => Ok(ReadStatus::WouldBlock),
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => Ok(ReadStatus::WouldBlock),
-            Err(err) => Err(err),
         }
     }
 }
@@ -291,10 +303,12 @@ impl<S: Write> Connection<S> {
         }
 
         let res = self.write_queue.write_to(&mut self.stream);
-        self.last_active = Instant::now();
 
         match res {
-            Ok(_) => {
+            Ok(n) => {
+                if n > 0 {
+                    self.last_active = Instant::now();
+                }
                 if self.write_queue.is_empty() {
                     if self.is_closing {
                         self.is_closed = true;
@@ -350,6 +364,7 @@ pub struct ConnectionTable<S = TcpStream> {
     connections: HashMap<Token, Connection<S>>,
     next_token: Token,
     max_connections: usize,
+    max_read_capacity: usize,
 }
 
 impl<S> Default for ConnectionTable<S> {
@@ -372,7 +387,19 @@ impl<S> ConnectionTable<S> {
             connections: HashMap::new(),
             next_token: 1, // 0 is reserved for LISTENER_TOKEN
             max_connections,
+            max_read_capacity: DEFAULT_MAX_READ_CAPACITY,
         }
+    }
+
+    /// Returns the maximum read buffer capacity for connections in this table.
+    #[must_use]
+    pub fn max_read_capacity(&self) -> usize {
+        self.max_read_capacity
+    }
+
+    /// Sets the maximum read buffer capacity limit for connections in this table.
+    pub fn set_max_read_capacity(&mut self, capacity: usize) {
+        self.max_read_capacity = capacity;
     }
 
     /// Inserts a new connection, assigning it a unique token.
@@ -395,7 +422,13 @@ impl<S> ConnectionTable<S> {
             self.next_token = 1;
         }
 
-        let connection = Connection::new(token, stream, peer_addr);
+        let connection = Connection::with_limits(
+            token,
+            stream,
+            peer_addr,
+            self.max_read_capacity,
+            DEFAULT_WRITE_HIGH_WATERMARK,
+        );
         self.connections.insert(token, connection);
         Ok(token)
     }
@@ -406,6 +439,19 @@ impl<S> ConnectionTable<S> {
     ///
     /// Returns an [`io::Error`] with [`io::ErrorKind::ConnectionRefused`] if the limit is reached.
     pub fn insert_connection(&mut self, connection: Connection<S>) -> io::Result<Token> {
+        let token = connection.id();
+        if token == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "token 0 is reserved for listener socket",
+            ));
+        }
+        if self.connections.contains_key(&token) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "connection with token already exists in table",
+            ));
+        }
         if self.connections.len() >= self.max_connections {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionRefused,
@@ -413,7 +459,6 @@ impl<S> ConnectionTable<S> {
             ));
         }
 
-        let token = connection.id();
         self.connections.insert(token, connection);
         Ok(token)
     }
@@ -610,15 +655,17 @@ impl ConnectionTable<TcpStream> {
             if let Some(conn) = self.connections.get_mut(&token) {
                 if conn.is_closing() {
                     // Stalled in closing state beyond idle timeout: force close immediately.
-                    if let Some(c) = self.connections.remove(&token) {
+                    if let Some(mut c) = self.connections.remove(&token) {
                         let _ = event_loop.deregister(c.raw_fd());
+                        lingering_close_tcp(c.stream_mut());
                         closed_count += 1;
                     }
                 } else {
                     conn.close();
                     if conn.is_closed() {
-                        if let Some(c) = self.connections.remove(&token) {
+                        if let Some(mut c) = self.connections.remove(&token) {
                             let _ = event_loop.deregister(c.raw_fd());
+                            lingering_close_tcp(c.stream_mut());
                             closed_count += 1;
                         }
                     } else {
@@ -642,8 +689,9 @@ impl ConnectionTable<TcpStream> {
             if let Some(conn) = self.connections.get_mut(&token) {
                 conn.close();
                 if conn.is_closed() {
-                    if let Some(c) = self.connections.remove(&token) {
+                    if let Some(mut c) = self.connections.remove(&token) {
                         let _ = event_loop.deregister(c.raw_fd());
+                        lingering_close_tcp(c.stream_mut());
                     }
                 } else {
                     let _ = self.sync_interest(token, event_loop);
@@ -654,13 +702,28 @@ impl ConnectionTable<TcpStream> {
 
     /// Forcefully closes and deregisters all remaining active connections from the event loop.
     ///
+    /// Performs a lingering close (shutdown Write followed by read drain) to prevent TCP RST on clients.
+    ///
     /// Returns the number of connections terminated.
     pub fn force_close_all(&mut self, event_loop: &mut EventLoop) -> usize {
         let count = self.connections.len();
-        for (_, conn) in self.connections.drain() {
+        for (_, mut conn) in self.connections.drain() {
             let _ = event_loop.deregister(conn.raw_fd());
+            lingering_close_tcp(conn.stream_mut());
         }
         count
+    }
+}
+
+fn lingering_close_tcp(stream: &mut TcpStream) {
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let _ = stream.set_nonblocking(true);
+    let mut drain_buf = [0u8; 1024];
+    for _ in 0..16 {
+        match stream.read(&mut drain_buf) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
     }
 }
 
@@ -968,6 +1031,37 @@ mod tests {
         let removed3 = table.sweep_idle_connections(timeout);
         assert_eq!(removed3, vec![t2]);
         assert!(!table.contains(t2));
+
+        Ok(())
+    }
+
+    struct WouldBlockWriter;
+
+    impl Write for WouldBlockWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::WouldBlock.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_failed_write_does_not_refresh_idle_timer() -> io::Result<()> {
+        let addr: SocketAddr = "127.0.0.1:8081".parse().expect("valid address");
+        let mut conn = Connection::new(1, WouldBlockWriter, addr);
+        conn.send_slice(b"pending data")?;
+
+        let past = Instant::now() - Duration::from_secs(60);
+        conn.last_active = past;
+
+        let status = conn.flush_outgoing()?;
+        assert_eq!(status, WriteStatus::Pending(12));
+        assert_eq!(
+            conn.last_active(),
+            past,
+            "flush returning WouldBlock MUST NOT refresh last_active timestamp"
+        );
 
         Ok(())
     }

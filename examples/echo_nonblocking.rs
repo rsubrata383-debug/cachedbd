@@ -32,15 +32,21 @@ struct EchoServerHandler {
 
 impl EchoServerHandler {
     /// Accepts all pending incoming connections from the kernel connection backlog.
-    fn handle_accept(&mut self, event_loop: &mut EventLoop) -> io::Result<()> {
+    fn handle_accept(&mut self, event_loop: &mut EventLoop) {
         if self.is_shutting_down {
-            return Ok(());
+            return;
         }
 
         loop {
             match self.listener.accept() {
                 Ok((stream, peer_addr)) => {
-                    stream.set_nonblocking(true)?;
+                    if let Err(err) = stream.set_nonblocking(true) {
+                        eprintln!(
+                            "Failed to set non-blocking on accepted stream from {peer_addr}: {err}"
+                        );
+                        drop(stream);
+                        continue;
+                    }
 
                     if self.connections.is_at_capacity() {
                         eprintln!(
@@ -71,38 +77,63 @@ impl EchoServerHandler {
                     break;
                 }
                 Err(ref err) if err.kind() == io::ErrorKind::Interrupted => {}
-                Err(err) => return Err(err),
+                Err(ref err) if err.kind() == io::ErrorKind::ConnectionAborted => {
+                    eprintln!("Connection aborted by peer before accept: {err}");
+                }
+                Err(ref err) if is_emfile_or_enfile(err) => {
+                    eprintln!("File descriptor limit reached during accept (EMFILE/ENFILE): {err}");
+                    // Stop accepting for this tick without returning fatal error.
+                    break;
+                }
+                Err(err) => {
+                    eprintln!("Non-fatal accept error: {err}");
+                    break;
+                }
             }
         }
-        Ok(())
     }
 
     /// Reads incoming bytes from a client socket until `WouldBlock` or EOF (`Ok(0)`).
-    fn handle_client_read(&mut self, token: Token, event_loop: &mut EventLoop) -> io::Result<bool> {
+    fn handle_client_read(&mut self, token: Token, event_loop: &mut EventLoop) -> bool {
         let Some(conn) = self.connections.get_mut(token) else {
-            return Ok(false);
+            return false;
         };
 
-        match conn.read_incoming()? {
-            ReadStatus::Eof => {
-                self.connections.remove_and_deregister(token, event_loop);
-                return Ok(false);
-            }
-            ReadStatus::WouldBlock => {}
-            ReadStatus::Ok(n) => {
-                // Echo received bytes back to client.
-                let data = conn.read_buffer().data().to_vec();
-                if let Err(err) = conn.send_chunk(data) {
-                    eprintln!("Failed to enqueue echo payload for client {token}: {err}");
-                    self.connections.remove_and_deregister(token, event_loop);
-                    return Ok(false);
+        loop {
+            match conn.read_incoming() {
+                Ok(ReadStatus::Eof) => {
+                    if conn.write_queue().is_empty() {
+                        self.connections.remove_and_deregister(token, event_loop);
+                        return false;
+                    }
+                    // Half-close: client closed its write half, but queued output remains to flush.
+                    // Sync interest: desired_flags() automatically drops READABLE and keeps WRITABLE.
+                    let _ = self.connections.sync_interest(token, event_loop);
+                    self.handle_client_write(token, event_loop);
+                    return false;
                 }
-                conn.read_buffer_mut().consume(n);
+                Ok(ReadStatus::WouldBlock) => break,
+                Ok(ReadStatus::Ok(n)) => {
+                    // Echo received bytes back to client.
+                    let data = conn.read_buffer().data().to_vec();
+                    if let Err(err) = conn.send_chunk(data) {
+                        eprintln!("Failed to enqueue echo payload for client {token}: {err}");
+                        self.connections.remove_and_deregister(token, event_loop);
+                        return false;
+                    }
+                    conn.read_buffer_mut().consume(n);
+                }
+                Err(err) => {
+                    // Per-connection I/O error: close and deregister only this connection.
+                    eprintln!("I/O read error on client {token}: {err}");
+                    self.connections.remove_and_deregister(token, event_loop);
+                    return false;
+                }
             }
         }
 
         // Try an immediate write flush of newly queued bytes.
-        Ok(self.handle_client_write(token, event_loop))
+        self.handle_client_write(token, event_loop)
     }
 
     /// Flushes queued outgoing bytes into the client socket transmit buffer.
@@ -136,6 +167,22 @@ impl EchoServerHandler {
     }
 }
 
+fn is_emfile_or_enfile(err: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        if let Some(code) = err.raw_os_error() {
+            return code == libc::EMFILE || code == libc::ENFILE;
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Some(code) = err.raw_os_error() {
+            return code == 10024; // WSAEMFILE
+        }
+    }
+    false
+}
+
 impl Handler for EchoServerHandler {
     fn on_event(
         &mut self,
@@ -144,20 +191,32 @@ impl Handler for EchoServerHandler {
         flags: EpollFlags,
     ) -> io::Result<()> {
         if token == LISTENER_TOKEN {
-            self.handle_accept(event_loop)?;
+            self.handle_accept(event_loop);
         } else {
-            // Check for error or peer hangup first.
-            if flags.contains(EpollFlags::ERROR) || flags.contains(EpollFlags::HANGUP) {
+            // Immediate error without data readiness: close immediately.
+            if flags.contains(EpollFlags::ERROR) && !flags.contains(EpollFlags::READABLE) {
                 self.remove_client(token, event_loop);
                 return Ok(());
             }
 
+            // If READABLE is set (even if HANGUP is also set), read and process pending data first!
             if flags.contains(EpollFlags::READABLE) {
-                let _ = self.handle_client_read(token, event_loop)?;
+                let _ = self.handle_client_read(token, event_loop);
             }
 
             if flags.contains(EpollFlags::WRITABLE) {
                 let _ = self.handle_client_write(token, event_loop);
+            }
+
+            // If peer hung up (or errored) and connection has drained all bytes or closed, remove.
+            if flags.contains(EpollFlags::HANGUP) || flags.contains(EpollFlags::ERROR) {
+                let should_remove = match self.connections.get(token) {
+                    Some(c) => c.is_closed() || c.write_queue().is_empty(),
+                    None => false,
+                };
+                if should_remove {
+                    self.remove_client(token, event_loop);
+                }
             }
         }
         Ok(())
@@ -337,6 +396,12 @@ impl NonBlockingEchoServer {
     }
 
     /// Removes a client connection and deregisters its descriptor from the event loop.
+    /// Sets the maximum read buffer capacity limit for newly accepted client connections.
+    pub fn set_max_read_capacity(&mut self, capacity: usize) {
+        self.state.connections.set_max_read_capacity(capacity);
+    }
+
+    /// Removes a client connection and deregisters its descriptor from the event loop.
     pub fn remove_client(&mut self, token: Token) {
         self.state
             .connections
@@ -361,4 +426,230 @@ fn main() -> io::Result<()> {
     server.run()?;
     println!("Server shut down gracefully.");
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::net::TcpStream;
+
+    #[test]
+    fn test_client_reset_mid_session_does_not_crash_server() -> io::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let mut server = NonBlockingEchoServer::new(listener)?;
+
+        // Connect client 1.
+        let mut client1 = TcpStream::connect(addr)?;
+        for _ in 0..50 {
+            server.state.handle_accept(&mut server.event_loop);
+            if server.client_count() == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(server.client_count(), 1);
+
+        // Connect client 2.
+        let client2 = TcpStream::connect(addr)?;
+        for _ in 0..50 {
+            server.state.handle_accept(&mut server.event_loop);
+            if server.client_count() == 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(server.client_count(), 2);
+
+        // Client 1 sends data and is echoed.
+        client1.write_all(b"hello")?;
+        let token1 = 1; // first accepted connection token
+        let res1 = server
+            .state
+            .on_event(&mut server.event_loop, token1, EpollFlags::READABLE);
+        assert!(res1.is_ok(), "client 1 read should succeed");
+
+        // Client 2 sets linger to 0 and drops immediately (TCP RST).
+        cachedb::net::sys::set_linger_zero(cachedb::net::sys::as_raw_fd(&client2))?;
+        drop(client2);
+
+        // Wait briefly for OS to deliver RST packet to local loopback socket.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // When event loop processes client 2 read event:
+        let token2 = 2; // second accepted connection token
+        let res2 = server
+            .state
+            .on_event(&mut server.event_loop, token2, EpollFlags::READABLE);
+
+        // FAILING CHECK ON UNPATCHED CODE:
+        // On unpatched code, res2 is Err (ConnectionReset), which killed the server!
+        // The regression test asserts that res2 is Ok(()) and client 2 is removed, while client 1 remains!
+        assert!(
+            res2.is_ok(),
+            "per-connection reset error MUST NOT propagate error out of handler: got {res2:?}"
+        );
+        assert_eq!(
+            server.client_count(),
+            1,
+            "failed client should be removed from connection table"
+        );
+        assert!(
+            server.state.connections.get(token1).is_some(),
+            "healthy client 1 must remain active"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_client_buffer_overflow_disconnects_client_only() -> io::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let mut server = NonBlockingEchoServer::new(listener)?;
+        // Set a small read buffer capacity limit (e.g. 64 bytes).
+        server.set_max_read_capacity(64);
+
+        // Connect client 1 and client 2.
+        let client1 = TcpStream::connect(addr)?;
+        for _ in 0..50 {
+            server.state.handle_accept(&mut server.event_loop);
+            if server.client_count() == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let _client2 = TcpStream::connect(addr)?;
+        for _ in 0..50 {
+            server.state.handle_accept(&mut server.event_loop);
+            if server.client_count() == 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        assert_eq!(server.client_count(), 2);
+        let token1 = 1;
+        let token2 = 2;
+
+        // Simulate an unconsumed oversized frame filling the read buffer to its limit (64 bytes):
+        {
+            let conn2 = server.state.connections.get_mut(token2).unwrap();
+            conn2
+                .read_buffer_mut()
+                .read_from(&mut std::io::Cursor::new(vec![b'x'; 64]))?;
+        }
+
+        let res2 = server
+            .state
+            .on_event(&mut server.event_loop, token2, EpollFlags::READABLE);
+
+        // Buffer overflow MUST NOT return error from handler: client disconnected cleanly
+        assert!(
+            res2.is_ok(),
+            "buffer overflow MUST NOT return error from handler: got {res2:?}"
+        );
+        assert_eq!(server.client_count(), 1);
+        assert!(server.state.connections.get(token1).is_some());
+
+        drop(client1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_half_close_preserves_queued_output() -> io::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let mut server = NonBlockingEchoServer::new(listener)?;
+
+        let mut client = TcpStream::connect(addr)?;
+        client.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+        client.set_write_timeout(Some(std::time::Duration::from_secs(3)))?;
+
+        for _ in 0..50 {
+            server.state.handle_accept(&mut server.event_loop);
+            if server.client_count() == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(server.client_count(), 1);
+        let token = 1;
+
+        // Send 512 KB payload (larger than socket buffers).
+        let payload = vec![0x42u8; 512 * 1024];
+        let payload_len = payload.len();
+
+        // Spawn client reader in background thread so socket buffer never deadlocks.
+        let mut client_clone = client.try_clone()?;
+        let reader_handle = std::thread::spawn(move || -> io::Result<Vec<u8>> {
+            let mut received = Vec::with_capacity(payload_len);
+            let mut buf = [0u8; 16384];
+            loop {
+                match std::io::Read::read(&mut client_clone, &mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => received.extend_from_slice(&buf[..n]),
+                    Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+            Ok(received)
+        });
+
+        // Write payload to server.
+        client.write_all(&payload)?;
+
+        // Client initiates half-close (EOF to server).
+        client.shutdown(std::net::Shutdown::Write)?;
+
+        // Drive server ticks until all incoming data is read, queued, and completely flushed.
+        for _ in 0..200 {
+            let _ = server
+                .state
+                .on_event(&mut server.event_loop, token, EpollFlags::READABLE);
+            let _ = server
+                .state
+                .on_event(&mut server.event_loop, token, EpollFlags::WRITABLE);
+            if server.client_count() == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        let received = reader_handle
+            .join()
+            .map_err(|_| io::Error::other("reader thread panicked"))??;
+
+        assert_eq!(
+            received.len(),
+            payload.len(),
+            "client must receive all echoed bytes after half-close"
+        );
+        assert_eq!(received, payload);
+
+        Ok(())
+    }
+}
+
+#[cfg(all(test, not(target_os = "linux")))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod non_linux_tests {
+    use super::*;
+
+    #[test]
+    fn test_nonblocking_echo_server_unsupported_on_non_linux() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let server = NonBlockingEchoServer::new(listener);
+        assert!(server.is_err());
+        assert_eq!(server.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
+    }
 }
