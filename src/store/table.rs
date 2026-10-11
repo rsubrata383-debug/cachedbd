@@ -154,6 +154,28 @@ impl<V> SingleTable<V> {
         None
     }
 
+    fn lookup_probe_count(&self, hash: u64, key: &[u8]) -> usize {
+        let ideal = self.ideal_index(hash);
+        let mut psl = 0u32;
+        let mut idx = ideal;
+        let mut probes = 0usize;
+
+        let max_probes = u32::try_from(self.capacity).unwrap_or(u32::MAX);
+        while psl < max_probes {
+            probes = probes.saturating_add(1);
+            let Some(slot) = self.slots.get(idx).and_then(Option::as_ref) else {
+                break;
+            };
+            if slot.psl < psl || (slot.hash == hash && slot.key.as_ref() == key) {
+                break;
+            }
+            psl = psl.saturating_add(1);
+            idx = (idx.wrapping_add(1)) & self.mask;
+        }
+
+        probes
+    }
+
     fn get_mut_with_hash(&mut self, hash: u64, key: &[u8]) -> Option<&mut V> {
         let ideal = self.ideal_index(hash);
         let mut psl = 0u32;
@@ -697,6 +719,19 @@ impl<V> RobinHoodTable<V> {
         }
 
         None
+    }
+
+    /// Returns the number of slot reads/probes inspected during a lookup for `key`.
+    #[must_use]
+    pub fn lookup_probe_count(&self, key: &[u8]) -> usize {
+        let hash = hash64(key, self.seed);
+        let mut count = self.main_table.lookup_probe_count(hash, key);
+        if let Some(ref old) = self.old_table {
+            if self.main_table.get_with_hash(hash, key).is_none() {
+                count = count.saturating_add(old.lookup_probe_count(hash, key));
+            }
+        }
+        count
     }
 
     /// Returns a mutable reference to the value corresponding to the supplied key.

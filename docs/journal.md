@@ -1226,3 +1226,44 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
    - *Latency Percentiles*: $p50 = 0.50\text{ µs}$, $p99 = 2.50\text{ µs}$, $p99.9 = 37.5\text{ µs}$, $p99.99 = 226.7\text{ µs}$, $max = 64.7\text{ ms}$.
    - *Table Quality*: Max PSL = 8, Average PSL = 0.44 probes/key across 1M entries, confirming outstanding probe fairness and clustering elimination.
    - *Spike Attribution*: Allocating and zero-initializing the new backing buffer when starting resize ($O(\text{new capacity})$) is the dominant source of tail latency ($24\text{ ms} - 64\text{ ms}$ for 1M-2M slot allocations).
+
+---
+
+## 2026-10-11: Week 6 Step 3b: Real Property Tests and Rigorous Benchmark Methodology
+
+- **Date**: 2026-10-11
+- **Scope**: Hardened property tests in `tests/property.rs`, fixed flawed benchmarking methodology in `benches/store_bench.rs`, updated documentation in `docs/benchmarks.md` and `docs/design/hash-table.md`.
+
+### What Was Wrong With the First Benchmark:
+1. **Key Cloning Inside Timed Loops**:
+   - The original benchmark invoked `table.insert(key.clone(), idx)` and `hash_map.insert(key.clone(), idx)` directly inside the timed region.
+   - Every single insert measured dynamic heap allocation, copying, and `Box` deallocation overhead rather than pure table hashing, probing, and displacement logic.
+2. **Lack of Warmup and Repetitions**:
+   - The first benchmark executed a single cold run per phase.
+   - Cold CPU caches, OS demand-zero paging, and memory allocator page faults artificially distorted measurements (e.g. get-miss appeared artificially slow at 537 ns).
+3. **Absence of Floor Baselines**:
+   - There were no baseline floor rows measuring loop iteration overhead and raw key hashing. It was impossible to isolate how much latency came from calling `hash64` versus traversing table probe chains.
+4. **Unmeasured Speculation on Slow Operations**:
+   - Latency causes for slow inserts were inferred rather than instrumented.
+   - In the revised benchmark, `capacity()` is explicitly measured before and after every operation to report with certainty whether an operation triggered a backing table expansion.
+
+### Corrective Methodology Implemented:
+1. **Zero Allocations in Timed Regions**:
+   - Separate pre-allocated key sets (`keys_insert`, `keys_lookup`, `miss_keys`, `keys_overwrite`, `pre_mixed_ops`) are built before timers start.
+   - Insert operations move `Box<[u8]>` directly via `into_iter()` with zero heap allocations during timing.
+2. **1 Warmup Run + 3 Measured Runs**:
+   - Every operation phase warms up CPU caches and backing pages once, then runs 3 measured iterations, reporting the median duration with minimum and maximum bounds.
+3. **Floor Baselines Added**:
+   - "Floor: loop + key access only" measures pure pointer dereferencing (~2.2 ns).
+   - "Floor: hash only" measures raw 64-bit hashing (~21.4 ns for `hash64`, ~25.2 ns for `RandomState`).
+4. **Measured Empirical Findings (1,000,000 Keys)**:
+   - **Throughput**: `RobinHoodTable` beats `std::HashMap` across nearly all phases: Insert is **1.13x faster** (404.8 ns vs 456.9 ns), Get hits is **4.61x faster** (280.5 ns vs 1291.8 ns), Get misses is **1.24x faster** (150.7 ns vs 186.2 ns), Overwrite is **1.25x faster** (246.3 ns vs 307.6 ns), Mixed is **1.31x faster** (372.9 ns vs 490.0 ns).
+   - **Get-Miss Investigation**: Now fine. Average miss probe count was measured via `lookup_probe_count` to be **1.70 slots**. Raw hashing takes 21.4 ns, and reading 1.70 slots (each 40 bytes, spanning ~2 to 3 64-byte DRAM cache lines) takes ~129 ns.
+   - **Tail Latency Comparison**: In `std::HashMap`, stop-the-world rehashing causes a **147.57 ms** pause at op #917,504. In `RobinHoodTable`, incremental migration avoids rehashing, yielding a **24.39 ms** worst-case spike (6x lower pause).
+   - **Resize Allocation Costs**: Empty table allocation (`RobinHoodTable::new`) was measured at $2^{20}$ slots (14.22 ms), $2^{22}$ slots (71.11 ms), and $2^{24}$ slots (340.56 ms).
+
+### Upgraded Property Tests:
+- Mixed model test upgraded to run **30,000+ operations** per seed with key universe of 6,000 keys, reaching `max_len >= 5,000` keys.
+- Asserted that $\ge 5$ resizes finish (consistently 10 finished) and $\ge 500$ operations run while resizing (consistently 1,100+ operations).
+- Heavy collisions and key shapes tests upgraded to run **10,000+ operations** per seed.
+- Multi-seed driver outputs live stats for all seeds under `--nocapture`, completing all 7 tests in **6.26 seconds** in debug mode.

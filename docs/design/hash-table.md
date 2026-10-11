@@ -87,7 +87,14 @@ The implementation enforces and validates core invariants (`check_invariants()`)
 ## 8. Incremental Resizing Architecture (Step 2)
 
 ### 8.1 Why Incremental Resizing?
-In an in-memory database targeting a strict $< 1\text{ ms}$ p99 latency SLA and 200k ops/sec throughput, stop-the-world reallocation is unacceptable. Reallocating and copying a hash table with 10M keys can pause execution for 50–200 ms. Incremental resizing spreads key copying work over mutating operations, bounding latency. However, while key migration is spread out incrementally, allocating and initializing the new backing table is $O(\text{new capacity})$ at the start of a resize; this allocation cost will be measured and benchmarked in Step 3.
+In an in-memory database targeting a strict $< 1\text{ ms}$ p99 latency SLA and 200k ops/sec throughput, stop-the-world reallocation is unacceptable. Reallocating and copying a hash table with 10M keys can pause execution for 50–200 ms. Incremental resizing spreads key copying work over mutating operations, bounding latency.
+
+However, while key migration is spread out incrementally across mutating operations (16 buckets at a time), allocating and zero-initializing the new backing table is $O(\text{new capacity})$ at the moment a resize is initiated. Empirical measurements for `RobinHoodTable::new` creation latency:
+- **$2^{20}$ slots (~42 MB)**: `14.22 ms`
+- **$2^{22}$ slots (~168 MB)**: `71.11 ms`
+- **$2^{24}$ slots (~671 MB)**: `340.56 ms`
+
+While this allocation cost causes a transient latency spike at power-of-two boundaries ($p99.99$ tail latency), it avoids copying all keys at once, reducing worst-case latency spikes by **6x** compared to standard library rehashing.
 
 ### 8.2 Dual-Table Structure
 - `main_table: SingleTable<V>`: The primary active table receiving new insertions.
@@ -122,27 +129,25 @@ In an in-memory database targeting a strict $< 1\text{ ms}$ p99 latency SLA and 
 
 ---
 
-## 9. Benchmark Profile and Latency Spikes (Week 6 Step 3)
+## 9. Benchmark Profile and Latency Spikes (Week 6 Step 3b)
 
-Empirical performance measured across 1,000,000 keys using `cargo bench --bench store_bench -- --keys 1000000`:
+Empirical performance measured across 1,000,000 keys using `cargo bench --bench store_bench -- --keys 1000000` (zero timed allocations, 1 warmup + 3 measured runs):
 
 ### 9.1 Insert Latency Distribution
-- **Median ($p50$)**: `0.50 µs` (500 ns)
-- **99th percentile ($p99$)**: `2.50 µs`
-- **99.9th percentile ($p99.9$)**: `37.50 µs`
-- **99.99th percentile ($p99.99$)**: `226.70 µs`
-- **Maximum latency ($max$)**: `64,741.60 µs` (~64.7 ms)
+- **Median ($p50$)**: `0.30 µs` (300 ns) vs `0.20 µs` in `std::HashMap`
+- **99th percentile ($p99$)**: `1.50 µs` vs `0.60 µs` in `std::HashMap`
+- **99.9th percentile ($p99.9$)**: `3.10 µs` vs `1.00 µs` in `std::HashMap`
+- **99.99th percentile ($p99.99$)**: `22.10 µs` vs `13.60 µs` in `std::HashMap`
+- **Maximum latency ($max$)**: `24,390.30 µs` (~24.4 ms) vs `147,570.80 µs` (~147.6 ms) in `std::HashMap`
 
-### 9.2 Root Causes of Latency Spikes
-The top slowest inserts recorded during the 1M key benchmark revealed the distinct root causes of latency spikes:
-
-1. **New Table Allocation and Page Zeroing (Primary Cause)**:
-   - *Example*: Operation #917,504 (`64.74 ms`) triggered resize expansion from 1,048,576 to 2,097,152 slots.
-   - *Example*: Operation #458,752 (`24.75 ms`) triggered resize expansion from 524,288 to 1,048,576 slots.
-   - *Mechanism*: Initializing `Box<[Option<Slot<V>>]>` for 2M slots requires allocating 83.9 MB of contiguous memory and writing zeroed memory. Under OS virtual memory management, allocating large buffers causes kernel memory faults and zero-fill pages, creating a transient multi-millisecond pause at the exact moment a resize starts.
-2. **Incremental Migration Batches (Secondary Cause)**:
-   - *Example*: Operation #477,293 (`45.48 ms`) and #490,952 (`38.03 ms`) occurred while migrating 16 buckets from `old_table`.
-   - *Mechanism*: Moving 16 occupied buckets shifts entries and touches cache lines across two separate tables (`old_table` and `main_table`). While each individual bucket move is fast, executing 16 moves consecutively while under memory allocator pressure causes elevated latency.
-3. **Collision Chains & Probe Displacements (Minimal Impact)**:
-   - In steady state without resize allocation, Robin Hood displacement bounds search lengths tightly.
-   - With average PSL at 0.44 and max PSL at 8, collision displacements never exceed small single-digit microseconds, keeping 99% of all insertions under 2.50 µs.
+### 9.2 Measured Root Causes of Latency Spikes
+By measuring `capacity()` before and after every slow operation, the top slowest inserts showed:
+1. **Capacity Expansion ($O(\text{new capacity})$ Buffer Allocation)**:
+   - Op #917,504 (`24.39 ms`): capacity changed `1048576 -> 2097152` (~83.9 MB zero-fill allocation).
+   - Op #458,752 (`12.24 ms`): capacity changed `524288 -> 1048576` (~41.9 MB zero-fill allocation).
+   - Op #229,376 (`6.97 ms`): capacity changed `262144 -> 524288` (~21.0 MB zero-fill allocation).
+   - In `std::HashMap`, the equivalent op #917,504 took `147.57 ms` because it had to reallocate *and* synchronously re-hash and copy 917k keys. In `RobinHoodTable`, keys are copied incrementally, resulting in a **6x lower worst-case latency spike**.
+2. **Steady-State Migration Batches**:
+   - In operations where capacity was unchanged (e.g. op #520,192 at `4.43 ms`), latency was bounded by OS virtual memory paging during 16-bucket migration transfers.
+3. **Collision Displacements**:
+   - Max PSL is 9 and average PSL is 0.46 probes per key; steady-state collision displacements remain sub-microsecond ($p99 = 1.50\text{ µs}$).

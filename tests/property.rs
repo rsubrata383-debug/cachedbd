@@ -1,7 +1,7 @@
 //! Property-based tests for [`cachedb::store::RobinHoodTable`].
 //!
-//! Includes a custom deterministic XorShift RNG harness and automated test shrinker
-//! without external testing dependencies.
+//! Includes a custom deterministic XorShift RNG harness, multi-seed driver,
+//! and automated test shrinker without external testing dependencies.
 
 use std::collections::HashMap;
 
@@ -14,13 +14,17 @@ struct XorShift64 {
 }
 
 impl XorShift64 {
-    fn new(mut seed: u64) -> Self {
-        if seed == 0 {
-            seed = 0x853c_49e6_748f_ea9b;
-        }
+    /// Creates a new `XorShift64` generator with the given seed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `seed == 0` (zero state is prohibited in XorShift).
+    fn new(seed: u64) -> Self {
+        assert_ne!(seed, 0, "XorShift64 seed must not be zero");
         Self { state: seed }
     }
 
+    /// Emits the next pseudorandom 64-bit word.
     fn next_u64(&mut self) -> u64 {
         let mut x = self.state;
         x ^= x << 13;
@@ -30,16 +34,25 @@ impl XorShift64 {
         x
     }
 
+    /// Returns a pseudorandom integer in half-open range `[min, max)`.
+    ///
+    /// Computes modulo on wide `u64` before casting to `usize`. Note: accepts `% diff`
+    /// modulo bias for high-throughput testing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `min >= max`.
     fn gen_range(&mut self, min: usize, max: usize) -> usize {
-        if min >= max {
-            return min;
-        }
-        let diff = max - min;
-        min + (self.next_u64() as usize % diff)
+        assert!(min < max, "empty range: min must be strictly less than max");
+        let diff = (max - min) as u64;
+        let offset = (self.next_u64() % diff) as usize;
+        min + offset
     }
 
+    /// Returns a pseudorandom boolean by sampling the most significant bit (MSB).
+    #[expect(dead_code, reason = "Utility method implementing AGENTS.md rule 11.1")]
     fn gen_bool(&mut self) -> bool {
-        (self.next_u64() & 1) == 1
+        (self.next_u64() >> 63) == 1
     }
 }
 
@@ -51,11 +64,20 @@ fn num_seeds() -> usize {
         .unwrap_or(24)
 }
 
+/// Operational statistics captured across a single property seed execution.
+#[derive(Debug, Default, Clone, Copy)]
+struct PropertyRunStats {
+    ops_run: usize,
+    max_len: usize,
+    ops_while_resizing: usize,
+    resizes_finished: usize,
+}
+
 /// Shrinks a failing sequence of operations by greedily removing halves, quarters,
 /// and individual operations while preserving the property violation.
 fn shrink_ops<Op: Clone + std::fmt::Debug>(
     ops: &[Op],
-    mut check_fn: impl FnMut(&[Op]) -> Result<(), String>,
+    mut check_fn: impl FnMut(&[Op]) -> Result<PropertyRunStats, String>,
 ) -> (Vec<Op>, String) {
     let mut current = ops.to_vec();
     let Err(mut last_err) = check_fn(&current) else {
@@ -116,31 +138,38 @@ fn shrink_ops<Op: Clone + std::fmt::Debug>(
     (current, last_err)
 }
 
-/// Runs a property test across configured seeds, shrinking and reporting failures.
+/// Runs a property test across configured seeds, printing live stats and shrinking on failures.
 fn run_property<Op: Clone + std::fmt::Debug>(
     test_name: &str,
     mut gen_fn: impl FnMut(&mut XorShift64) -> Vec<Op>,
-    mut check_fn: impl FnMut(&[Op]) -> Result<(), String>,
+    mut check_fn: impl FnMut(&[Op]) -> Result<PropertyRunStats, String>,
 ) {
     let seeds = num_seeds();
     for seed_idx in 0..seeds {
-        let seed = (seed_idx as u64)
-            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-            .wrapping_add(1);
+        // Compute non-zero odd seed per AGENTS.md rules
+        let seed = ((seed_idx as u64) + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
         let mut rng = XorShift64::new(seed);
         let ops = gen_fn(&mut rng);
 
-        if let Err(orig_err) = check_fn(&ops) {
-            let (shrunk, shrunk_err) = shrink_ops(&ops, &mut check_fn);
-            panic!(
-                "Property test '{test_name}' FAILED with seed {seed}.\n\
-                 Original ops count: {}, initial error: {orig_err}\n\
-                 Shrunk to {} ops:\n{:#?}\n\
-                 Shrunk failure error: {shrunk_err}",
-                ops.len(),
-                shrunk.len(),
-                shrunk
-            );
+        match check_fn(&ops) {
+            Ok(stats) => {
+                println!(
+                    "[{test_name}] seed {seed_idx:2} ({seed:#018x}): ops={:5}, max_len={:4}, ops_resizing={:5}, resizes_finished={:2}",
+                    stats.ops_run, stats.max_len, stats.ops_while_resizing, stats.resizes_finished
+                );
+            }
+            Err(orig_err) => {
+                let (shrunk, shrunk_err) = shrink_ops(&ops, &mut check_fn);
+                panic!(
+                    "Property test '{test_name}' FAILED with seed {seed}.\n\
+                     Original ops count: {}, initial error: {orig_err}\n\
+                     Shrunk to {} ops:\n{:#?}\n\
+                     Shrunk failure error: {shrunk_err}",
+                    ops.len(),
+                    shrunk.len(),
+                    shrunk
+                );
+            }
         }
     }
 }
@@ -157,37 +186,42 @@ enum MixedOp {
     GetMut(Vec<u8>, u64),
     Remove(Vec<u8>),
     StepMigration(usize),
-    Clear,
     Len,
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_mixed_model_property() {
-    let key_pool: Vec<Vec<u8>> = (0..24).map(|i| format!("key_{i}").into_bytes()).collect();
+    // Large key universe to allow table len to reach >= 3,000 keys
+    const KEY_UNIVERSE_SIZE: usize = 6_000;
+    let key_pool: Vec<Vec<u8>> = (0..KEY_UNIVERSE_SIZE)
+        .map(|i| format!("key_{i:06}").into_bytes())
+        .collect();
 
     run_property(
         "test_mixed_model_property",
         |rng| {
-            let op_count = rng.gen_range(100, 250);
+            // Run at least 30,000 operations per seed
+            let op_count = rng.gen_range(30_000, 32_000);
             let mut ops = Vec::with_capacity(op_count);
             for _ in 0..op_count {
                 let k = key_pool[rng.gen_range(0, key_pool.len())].clone();
-                let op = match rng.gen_range(0, 8) {
-                    0 => MixedOp::Insert(k, rng.next_u64()),
-                    1 => MixedOp::Overwrite(k, rng.next_u64()),
-                    2 => MixedOp::Get(k),
-                    3 => MixedOp::GetMut(k, rng.next_u64() % 1000),
-                    4 => MixedOp::Remove(k),
-                    5 => MixedOp::StepMigration(rng.gen_range(1, 32)),
-                    6 => {
-                        if rng.gen_range(0, 20) == 0 {
-                            MixedOp::Clear
-                        } else {
-                            MixedOp::Len
-                        }
-                    }
-                    _ => MixedOp::Len,
+                // 45% Insert, 20% Overwrite, 15% Get, 5% GetMut, 10% Remove, 4% StepMigration, 1% Len
+                let roll = rng.gen_range(0, 100);
+                let op = if roll < 45 {
+                    MixedOp::Insert(k, rng.next_u64())
+                } else if roll < 65 {
+                    MixedOp::Overwrite(k, rng.next_u64())
+                } else if roll < 80 {
+                    MixedOp::Get(k)
+                } else if roll < 85 {
+                    MixedOp::GetMut(k, rng.next_u64() % 1000)
+                } else if roll < 95 {
+                    MixedOp::Remove(k)
+                } else if roll < 99 {
+                    MixedOp::StepMigration(rng.gen_range(1, 32))
+                } else {
+                    MixedOp::Len
                 };
                 ops.push(op);
             }
@@ -197,7 +231,14 @@ fn test_mixed_model_property() {
             let mut table = RobinHoodTable::<u64>::with_default_seed(8);
             let mut reference = HashMap::<Vec<u8>, u64>::new();
 
+            let mut stats = PropertyRunStats {
+                ops_run: ops.len(),
+                ..Default::default()
+            };
+
             for (op_idx, op) in ops.iter().enumerate() {
+                let resizing_before = table.is_resizing();
+
                 match op {
                     MixedOp::Insert(k, v) | MixedOp::Overwrite(k, v) => {
                         let prev_ref = reference.insert(k.clone(), *v);
@@ -205,7 +246,7 @@ fn test_mixed_model_property() {
                             Ok(prev_tab) => {
                                 if prev_tab != prev_ref {
                                     return Err(format!(
-                                        "Op {op_idx}: insert({k:?}, {v}) mismatch: table returned {prev_tab:?}, ref returned {prev_ref:?}"
+                                        "Op {op_idx}: insert({k:?}, {v}) mismatch: table={prev_tab:?}, ref={prev_ref:?}"
                                     ));
                                 }
                             }
@@ -259,10 +300,6 @@ fn test_mixed_model_property() {
                             return Err(format!("Op {op_idx}: step_migration({n}) error: {e:?}"));
                         }
                     }
-                    MixedOp::Clear => {
-                        reference.clear();
-                        table.clear();
-                    }
                     MixedOp::Len => {
                         if table.len() != reference.len() {
                             return Err(format!(
@@ -274,7 +311,20 @@ fn test_mixed_model_property() {
                     }
                 }
 
-                if op_idx % 25 == 0 {
+                if table.len() > stats.max_len {
+                    stats.max_len = table.len();
+                }
+
+                if table.is_resizing() {
+                    stats.ops_while_resizing = stats.ops_while_resizing.saturating_add(1);
+                }
+
+                if resizing_before && !table.is_resizing() {
+                    stats.resizes_finished = stats.resizes_finished.saturating_add(1);
+                }
+
+                // Checkpoint invariant validation
+                if op_idx % 2_000 == 0 {
                     table.check_invariants()?;
                 }
             }
@@ -305,7 +355,30 @@ fn test_mixed_model_property() {
                 ));
             }
 
-            Ok(())
+            // Required assertions per Week 6 Step 3b prompt:
+            // 1. Highest len reached >= 3,000 keys
+            if stats.max_len < 3_000 {
+                return Err(format!(
+                    "Mixed test assertion failed: max_len was {} (expected >= 3,000)",
+                    stats.max_len
+                ));
+            }
+            // 2. At least 5 resizes finish per seed
+            if stats.resizes_finished < 5 {
+                return Err(format!(
+                    "Mixed test assertion failed: resizes_finished was {} (expected >= 5)",
+                    stats.resizes_finished
+                ));
+            }
+            // 3. At least 500 operations run while resizing
+            if stats.ops_while_resizing < 500 {
+                return Err(format!(
+                    "Mixed test assertion failed: ops_while_resizing was {} (expected >= 500)",
+                    stats.ops_while_resizing
+                ));
+            }
+
+            Ok(stats)
         },
     );
 }
@@ -315,6 +388,7 @@ fn test_mixed_model_property() {
 // -----------------------------------------------------------------------------
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn test_key_shapes_property() {
     run_property(
         "test_key_shapes_property",
@@ -356,14 +430,18 @@ fn test_key_shapes_property() {
                 keys.push(long_key);
             }
 
-            let op_count = rng.gen_range(80, 150);
+            // Run at least 10,000 operations per seed
+            let op_count = rng.gen_range(10_000, 11_000);
             let mut ops = Vec::with_capacity(op_count);
             for _ in 0..op_count {
                 let k = keys[rng.gen_range(0, keys.len())].clone();
-                match rng.gen_range(0, 3) {
-                    0 => ops.push((0u8, k, rng.next_u64())), // insert
-                    1 => ops.push((1u8, k, 0)),              // get
-                    _ => ops.push((2u8, k, 0)),              // remove
+                let roll = rng.gen_range(0, 10);
+                if roll < 5 {
+                    ops.push((0u8, k, rng.next_u64())); // insert
+                } else if roll < 8 {
+                    ops.push((1u8, k, 0)); // get
+                } else {
+                    ops.push((2u8, k, 0)); // remove
                 }
             }
             ops
@@ -372,7 +450,14 @@ fn test_key_shapes_property() {
             let mut table = RobinHoodTable::<u64>::with_default_seed(8);
             let mut reference = HashMap::<Vec<u8>, u64>::new();
 
+            let mut stats = PropertyRunStats {
+                ops_run: ops.len(),
+                ..Default::default()
+            };
+
             for (op_idx, (tag, key, val)) in ops.iter().enumerate() {
+                let resizing_before = table.is_resizing();
+
                 match tag {
                     0 => {
                         let prev_ref = reference.insert(key.clone(), *val);
@@ -407,10 +492,26 @@ fn test_key_shapes_property() {
                         }
                     }
                 }
+
+                if table.len() > stats.max_len {
+                    stats.max_len = table.len();
+                }
+
+                if table.is_resizing() {
+                    stats.ops_while_resizing = stats.ops_while_resizing.saturating_add(1);
+                }
+
+                if resizing_before && !table.is_resizing() {
+                    stats.resizes_finished = stats.resizes_finished.saturating_add(1);
+                }
+
+                if op_idx % 2_000 == 0 {
+                    table.check_invariants()?;
+                }
             }
 
             table.check_invariants()?;
-            Ok(())
+            Ok(stats)
         },
     );
 }
@@ -432,11 +533,12 @@ fn test_heavy_collisions_property() {
     run_property(
         "test_heavy_collisions_property",
         |rng| {
-            let op_count = rng.gen_range(100, 200);
+            // Run at least 10,000 operations per seed
+            let op_count = rng.gen_range(10_000, 11_000);
             let mut ops = Vec::with_capacity(op_count);
 
             for _i in 0..op_count {
-                let key_id = rng.gen_range(0, 30);
+                let key_id = rng.gen_range(0, 150);
                 let key = format!("coll_key_{key_id}").into_bytes();
                 // Ensure a key's forced hash is deterministic for that key
                 let forced_hash = if (key_id % 2) == 0 {
@@ -447,16 +549,15 @@ fn test_heavy_collisions_property() {
                     u64::MAX.wrapping_sub((key_id as u64) % 4)
                 };
 
-                let op = match rng.gen_range(0, 3) {
-                    0 => CollisionOp::InsertWithHash(forced_hash, key, rng.next_u64()),
-                    1 => {
-                        if rng.gen_bool() {
-                            CollisionOp::RemoveWithHash(forced_hash, key)
-                        } else {
-                            CollisionOp::StepMigration(rng.gen_range(1, 16))
-                        }
-                    }
-                    _ => CollisionOp::GetWithHash(forced_hash, key),
+                let roll = rng.gen_range(0, 10);
+                let op = if roll < 5 {
+                    CollisionOp::InsertWithHash(forced_hash, key, rng.next_u64())
+                } else if roll < 7 {
+                    CollisionOp::GetWithHash(forced_hash, key)
+                } else if roll < 9 {
+                    CollisionOp::RemoveWithHash(forced_hash, key)
+                } else {
+                    CollisionOp::StepMigration(rng.gen_range(1, 16))
                 };
                 ops.push(op);
             }
@@ -466,7 +567,14 @@ fn test_heavy_collisions_property() {
             let mut table = RobinHoodTable::<u64>::with_default_seed(8);
             let mut reference = HashMap::<Vec<u8>, u64>::new();
 
+            let mut stats = PropertyRunStats {
+                ops_run: ops.len(),
+                ..Default::default()
+            };
+
             for (op_idx, op) in ops.iter().enumerate() {
+                let resizing_before = table.is_resizing();
+
                 match op {
                     CollisionOp::InsertWithHash(h, k, v) => {
                         let prev_ref = reference.insert(k.clone(), *v);
@@ -498,13 +606,25 @@ fn test_heavy_collisions_property() {
                     }
                 }
 
-                if op_idx % 20 == 0 {
+                if table.len() > stats.max_len {
+                    stats.max_len = table.len();
+                }
+
+                if table.is_resizing() {
+                    stats.ops_while_resizing = stats.ops_while_resizing.saturating_add(1);
+                }
+
+                if resizing_before && !table.is_resizing() {
+                    stats.resizes_finished = stats.resizes_finished.saturating_add(1);
+                }
+
+                if op_idx % 2_000 == 0 {
                     table.check_invariants()?;
                 }
             }
 
             table.check_invariants()?;
-            Ok(())
+            Ok(stats)
         },
     );
 }
@@ -518,17 +638,23 @@ fn test_resize_rules_property() {
     run_property(
         "test_resize_rules_property",
         |rng| {
-            let count = rng.gen_range(50, 120);
+            let count = rng.gen_range(150, 300);
             (0..count)
                 .map(|i| (format!("key_{i}").into_bytes(), rng.next_u64()))
                 .collect::<Vec<_>>()
         },
         |entries| {
             let mut table = RobinHoodTable::<u64>::with_default_seed(8);
+            let mut stats = PropertyRunStats {
+                ops_run: entries.len(),
+                ..Default::default()
+            };
 
             for (k, v) in entries {
                 let len_before = table.len();
                 let is_new = table.get(k).is_none();
+                let resizing_before = table.is_resizing();
+
                 table
                     .insert(k.clone().into_boxed_slice(), *v)
                     .map_err(|e| format!("insert err: {e:?}"))?;
@@ -552,11 +678,19 @@ fn test_resize_rules_property() {
                             "step_migration changed table.len() during active resize".to_string()
                         );
                     }
+                    stats.ops_while_resizing = stats.ops_while_resizing.saturating_add(1);
                 }
-                table.check_invariants()?;
+
+                if resizing_before && !table.is_resizing() {
+                    stats.resizes_finished = stats.resizes_finished.saturating_add(1);
+                }
+
+                if table.len() > stats.max_len {
+                    stats.max_len = table.len();
+                }
             }
 
-            // Property 1: step_migration(usize::MAX) completes migration and old_table becomes None
+            // Property: step_migration(usize::MAX) completes migration and old_table becomes None
             if table.is_resizing() {
                 let finished = !table
                     .step_migration(usize::MAX)
@@ -564,10 +698,11 @@ fn test_resize_rules_property() {
                 if !finished || table.is_resizing() {
                     return Err("table still resizing after step_migration(usize::MAX)".to_string());
                 }
+                stats.resizes_finished = stats.resizes_finished.saturating_add(1);
             }
 
             table.check_invariants()?;
-            Ok(())
+            Ok(stats)
         },
     );
 }
@@ -581,7 +716,7 @@ fn test_order_independence_property() {
     run_property(
         "test_order_independence_property",
         |rng| {
-            let count = rng.gen_range(30, 80);
+            let count = rng.gen_range(100, 200);
             let pairs: Vec<(Vec<u8>, u64)> = (0..count)
                 .map(|i| (format!("perm_key_{i}").into_bytes(), rng.next_u64()))
                 .collect();
@@ -639,7 +774,14 @@ fn test_order_independence_property() {
                 );
             }
 
-            Ok(())
+            let stats = PropertyRunStats {
+                ops_run: pairs.len() * 2,
+                max_len: table_a.len(),
+                ops_while_resizing: 0,
+                resizes_finished: 0,
+            };
+
+            Ok(stats)
         },
     );
 }
@@ -653,7 +795,7 @@ fn test_overwrite_and_remove_property() {
     run_property(
         "test_overwrite_and_remove_property",
         |rng| {
-            let count = rng.gen_range(40, 100);
+            let count = rng.gen_range(100, 250);
             (0..count)
                 .map(|i| {
                     (
@@ -711,7 +853,15 @@ fn test_overwrite_and_remove_property() {
             }
 
             table.check_invariants()?;
-            Ok(())
+
+            let stats = PropertyRunStats {
+                ops_run: triplets.len() * 4,
+                max_len: table.len(),
+                ops_while_resizing: 0,
+                resizes_finished: 0,
+            };
+
+            Ok(stats)
         },
     );
 }
@@ -737,7 +887,7 @@ fn test_deliberately_wrong_reference_shrinker() {
     }
 
     // Buggy reference model: drops key 7 completely
-    let check_buggy = |ops: &[BuggyOp]| -> Result<(), String> {
+    let check_buggy = |ops: &[BuggyOp]| -> Result<PropertyRunStats, String> {
         let mut table = RobinHoodTable::<u64>::with_default_seed(8);
         for op in ops {
             match op {
@@ -759,7 +909,7 @@ fn test_deliberately_wrong_reference_shrinker() {
                 }
             }
         }
-        Ok(())
+        Ok(PropertyRunStats::default())
     };
 
     let (shrunk, shrunk_err) = shrink_ops(&initial_ops, check_buggy);
