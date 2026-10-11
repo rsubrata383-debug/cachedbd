@@ -56,27 +56,65 @@ Tombstone markers degrade lookup performance and require periodic cleanup passes
 
 - **Max Load Factor**: `7 / 8` (87.5%).
   - *Rationale*: With Robin Hood hashing, variance in probe sequence lengths is remarkably small even at 87.5% load, yielding average PSLs typically between 1 and 3. An 87.5% threshold saves significant memory compared to 50% or 75% thresholds while avoiding clustering cliffs.
-- **Step 1 Fixed Capacity**: In Week 6 Step 1, the table has a fixed capacity. When an insertion would cause `len + 1 > capacity * 7 / 8`, the insert fails with `Err(TableFull)`. Overwriting an existing key never increases load and therefore never fails with `TableFull`.
-- **Step 2 Evolution**: In Step 2, reaching this load threshold triggers incremental background resizing across dual tables.
+- **Incremental Resizing**: When an insertion causes `main_table.len + 1 > main_table.capacity * 7 / 8`, the table initiates incremental resizing by doubling capacity.
+- **Max Capacity**: $2^{30}$ slots (~1.07 billion buckets). If the table is already at maximum capacity and cannot double, insertions that exceed the 87.5% threshold return `Err(TableFull)`. Overwriting an existing key never increases load and always succeeds.
 
 ---
 
 ## 6. Table Invariants
 
-The implementation enforces and validates five core invariants (`check_invariants()`):
+The implementation enforces and validates core invariants (`check_invariants()`):
 1. **Accurate PSL**: For every occupied slot $i$, its `psl` equals the circular distance from its ideal slot:
    $$\text{psl} = (i + C - (\text{hash} \ \& \ (C - 1))) \bmod C$$
 2. **PSL Gradient (Cluster Invariant)**: For neighboring occupied slots $i$ and $(i + 1) \bmod C$, the next slot's PSL cannot exceed the previous slot's PSL plus one:
    $$\text{psl}[(i + 1) \bmod C] \le \text{psl}[i] + 1$$
-3. **Empty Slot Cluster Termination**: An empty slot terminates probe chains; there are no disconnected clusters.
-4. **Length Consistency**: `len` equals the exact count of occupied slots.
-5. **No Duplicate Keys**: No two occupied slots contain identical key byte sequences.
+3. **Empty Slot Cluster Termination**: An empty slot terminates probe chains. For any slot with `psl > 0`, the immediately preceding slot `(i + C - 1) % C` must be occupied.
+4. **Length Consistency**: `len` equals the exact count of occupied slots across `main_table` and `old_table`.
+5. **No Duplicate Keys**: No key byte sequence exists in both `main_table` and `old_table`, nor in multiple slots within either table.
+6. **Migrated Region Emptiness**: When resizing is active, all slots $0 \le i < \text{migrate\_cursor}$ in `old_table` are guaranteed empty (`None`).
 
 ---
 
 ## 7. Hash Function (`hash.rs`)
 
 - **Design**: Fast non-cryptographic 64-bit hash function based on Wyhash / Wang Yi's multiply-and-fold (`mum`) algorithm. It uses 128-bit arithmetic (`u128`) to fold 64-bit chunks with high entropy.
-- **Seeded**: Accepts a 64-bit seed. A global per-process random seed is initialized via `std::hash::RandomState::new().hash_one(...)` using `std::sync::OnceLock`. Custom fixed seeds are supported for deterministic tests and benchmarks.
+- **Seeded**: Accepts a 64-bit seed. A global per-process random seed is initialized via `std::hash::RandomState::new().hash_one(...)` using `std::sync::OnceLock`. Both `main_table` and `old_table` always share the exact same seed.
 - **HashDoS Notice**: This is a non-cryptographic hash designed for high-throughput memory hashing. It is protected against accidental collision clustering via per-process random seeding, but is not cryptographic.
 
+---
+
+## 8. Incremental Resizing Architecture (Step 2)
+
+### 8.1 Why Incremental Resizing?
+In an in-memory database targeting a strict $< 1\text{ ms}$ p99 latency SLA and 200k ops/sec throughput, stop-the-world reallocation is unacceptable. Reallocating and copying a hash table with 10M keys can pause execution for 50–200 ms. Incremental resizing spreads migration work over mutating operations, bounding latency and ensuring zero stop-the-world stalls.
+
+### 8.2 Dual-Table Structure
+- `main_table: SingleTable<V>`: The primary active table receiving new insertions.
+- `old_table: Option<SingleTable<V>>`: The previous table being drained during an active resize.
+- `migrate_cursor: usize`: Index of the next bucket in `old_table` to inspect and migrate.
+- `MIGRATE_BATCH = 16`: Number of `old_table` buckets migrated on mutating operations.
+
+### 8.3 Resizing Lifecycle
+1. **Trigger**: When `main_table.len + 1 > main_table.capacity * 7 / 8` on an insert:
+   - If a resize is already running, the table finishes migrating all remaining buckets from `old_table` first before beginning the next resize.
+   - If `main_table.capacity >= max_capacity` ($2^{30}$), insertion fails with `Err(TableFull)`.
+   - Otherwise, `main_table` is moved to `old_table`, a new `main_table` with $2\times$ capacity is allocated using the exact same seed, and `migrate_cursor` is reset to 0.
+2. **Paced Incremental Migration**:
+   - Mutating operations (`insert`, `remove`, `get_mut`) and periodic event-loop calls (`step_migration`) migrate up to `MIGRATE_BATCH = 16` buckets from `old_table`.
+   - Read-only lookups (`get(&self)`) **do not migrate** and remain cheap and shareable.
+   - **Hole-Free Migration via Backward-Shift**: If `old_table[migrate_cursor]` is empty, the cursor advances. If it is occupied, it is removed using backward-shift deletion (`remove_at_and_shift`). Any subsequent cluster entries shift backward into $\ge \text{migrate\_cursor}$ with decremented PSL. No holes are created in `old_table`, ensuring lookups in `old_table` remain fully valid at every step.
+   - **Key Preservation**: If inserting into `main_table` returns an error, the item is restored into `old_table` so keys are never lost.
+   - Keys are **never re-hashed** during migration; cached 64-bit hashes are directly transferred.
+3. **Completion**:
+   - When `migrate_cursor >= old_table.capacity` or `old_table.len == 0`, `old_table` is deallocated (`None`) and `migrate_cursor` is reset to 0.
+   - Resizing can also be stepped manually or finished in one shot via `table.step_migration(usize::MAX)`.
+
+### 8.4 Operation Rules
+- **Read Lookup (`get(&self)`)**: Read-only (`&self`). Probes `main_table` first, then `old_table` (if resizing). Touches 0 migration buckets.
+- **Mutable Lookup (`get_mut(&mut self)`)**: Migrates up to 16 buckets. If present in `old_table`, removes and transfers to `main_table`.
+- **Insert (`insert`)**: Migrates up to 16 buckets. Always inserts into `main_table`. If present in `old_table`, removes from `old_table` so keys are never duplicated.
+- **Remove (`remove`)**: Migrates up to 16 buckets. Removes from `main_table` and `old_table`, returning the removed value if found.
+- **Length (`len()`)**: Exactly `main_table.len + old_table.len`.
+- **Worst-Case Cost**:
+  - `get`: 0 migration buckets touched. Probes $\approx 1-2$ slots in `main_table` (and `old_table` on miss).
+  - `insert` / `remove` / `get_mut`: At most $16$ buckets touched in `old_table` plus $1$ Robin Hood operation in `main_table`. Every operation remains strictly $\mathcal{O}(1)$ and runs in sub-microsecond time.

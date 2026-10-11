@@ -1094,3 +1094,55 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 
 - **Date**: 2026-10-11
 - **Summary**: The hash table was first created in `src/storage/` by mistake. The project layout from the roadmap uses `src/store/`. Moved to `src/store/`.
+
+---
+
+## 2026-10-11: Week 6 Step 2: Incremental Resizing for Robin Hood Table
+
+- **Date**: 2026-10-11
+- **Scope**: Implemented non-blocking incremental dual-table resizing for `RobinHoodTable<V>` in `src/store/table.rs`.
+
+### Architecture & Decisions:
+1. **Decision: Read-Only `get(&self)` Without Migration**:
+   - `get(&self)` takes `&self` and does not trigger migration.
+   - *Reason*: Reads remain cheap, non-mutating, and shareable. In an event-driven architecture, event loop timer callbacks call `step_migration` periodically, so even a 100% read-only workload steadily completes background resizing without imposing mutation overhead on reads.
+   - Paced migration (`MIGRATE_BATCH = 16`) is performed only in mutating operations (`insert`, `remove`, `get_mut`) and explicit `step_migration` calls.
+2. **Dual Tables & Consistent Seeding**:
+   - `main_table: SingleTable<V>`: Primary active table.
+   - `old_table: Option<SingleTable<V>>`: Drained table during active resizing.
+   - `migrate_cursor: usize`: Monotonically increasing scan cursor in `old_table`.
+   - `seed`: Both `main_table` and `old_table` strictly share the identical 64-bit seed (`self.seed`). Cached hashes are transferred directly without re-hashing.
+3. **Hole-Free Migration via Backward-Shift**:
+   - When cursor is at index $i$: if slot $i$ is empty, cursor advances. If slot $i$ is full, it is removed using backward-shift deletion (`remove_at_and_shift`).
+   - Subsequent cluster entries shift backward into $\ge \text{cursor}$ with decremented PSL. No empty hole is ever created within a probe cluster.
+   - `old_table` remains 100% valid and satisfies all Robin Hood invariants at every single step of migration.
+4. **Key Preservation on Migration Failure**:
+   - If inserting a migrated slot into `main_table` returns an error (e.g. `TableFull`), the slot is restored into `old_table` via `old.insert_slot(slot)` and the error is returned. Keys are never dropped or lost.
+5. **Operation Rules**:
+   - `get(&self)`: Checks `main_table` first, then `old_table`. 0 migration buckets touched.
+   - `get_mut`: Steps migration; checks `main_table`, then `old_table` (migrating on find).
+   - `insert`: Steps migration; removes from `old_table` if present; writes to `main_table`.
+   - `remove`: Steps migration; removes from both `main_table` and `old_table`.
+   - `len`: Returns `main_table.len + old_table.len`.
+6. **Latency Bounds**:
+   - `get`: 0 migration buckets touched; probes $\approx 1-2$ slots.
+   - `insert` / `remove` / `get_mut`: At most 16 buckets touched in `old_table` plus one Robin Hood operation in `main_table`.
+
+### Invariants & Testing:
+- `check_invariants()` verifies:
+  - Both tables satisfy PSL accuracy, neighbor gradient $psl[i+1] \le psl[i] + 1$, and cluster continuity.
+  - Empty slot terminates probe: for any occupied slot with `psl > 0`, the previous slot `(i + C - 1) % C` must be occupied.
+  - Slots $0 \le i < \text{migrate_cursor}$ in `old_table` are strictly empty (`None`).
+  - No key byte sequence is duplicated across `main_table` and `old_table`.
+  - Total length matches the sum of occupied slots across both tables.
+  - `Slot` fields are scoped to `pub(crate)`.
+- Verification test suite:
+  - `test_old_table_backward_shift_migration_cluster_wrap_invariants_at_every_step`: Validates `old_table` invariants and lookups at every single migration step on a wrapping collision cluster.
+  - `test_one_seed_for_both_tables_after_full_resize`: Proves both tables share the same seed and all stored hashes equal `hash64(key, seed)`.
+  - `test_migration_error_does_not_lose_key_when_main_is_full`: Proves failed migration restores slot to `old_table` without key loss.
+  - `test_invariant_empty_slot_before_psl_greater_than_zero_fails`: Intentionally breaks the probe continuity rule and asserts invariant failure.
+  - `test_differential_vs_std_hashmap_100k_ops`: 100,000 randomized operations against `std::collections::HashMap` with invariant checks every 500 ops.
+  - `test_insert_100k_keys_from_small_table_no_err_all_found`: 100k sequential inserts starting from capacity 8.
+
+### Open Questions & Future Considerations:
+- **Table Shrinking**: Currently, the table grows dynamically up to $2^{30}$, but does not shrink when elements are removed. Should an incremental down-sizing migration be initiated when load factor drops below $1/8$ (12.5%)? (Left for future consideration; not required in Phase 1 roadmap).
