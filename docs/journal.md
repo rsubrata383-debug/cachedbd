@@ -664,6 +664,15 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - **Doc Comment Correction**: Removed an erroneous duplicate line referencing `remove_client` from the doc comment on `set_max_read_capacity` in `examples/echo_nonblocking.rs`.
   - **Roadmap Synchronization**: Marked Phase 1 Week 5 as "Not started" in `README.md` to accurately reflect project status before beginning wire protocol implementation.
 
+---
+
+## 2026-10-11: CI Enhancement — Linux 10k Real TCP Soak Test Job
+
+- **Date**: 2026-10-11
+- **Summary**: Added a dedicated `soak` job to GitHub Actions CI running on `ubuntu-latest` with elevated file descriptor limits to execute the ignored 10,000 real TCP connection test.
+- **Why Added**: The `test_ten_thousand_real_tcp_idle_connections` test in `tests/soak.rs` creates 10,000 client sockets and 10,000 server sockets, requiring more than 20,000 open file descriptors. On default environments (and standard CI runs), the default soft descriptor limit is 1,024, causing the test to be marked `#[ignore]`. By raising the limit with `ulimit -n 30000` in a dedicated CI job, this test runs on every workflow run and manual trigger.
+- **What It Proves**: It proves that the single-threaded networking stack and `ConnectionTable` handle 10,000 live kernel TCP sockets concurrently on real Linux loopback without descriptor leaks, stack overflow, or memory exhaustion.
+
 
 
 

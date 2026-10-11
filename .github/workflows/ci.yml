@@ -5,6 +5,10 @@ on:
     branches: ["**"]
   pull_request:
     branches: ["**"]
+  workflow_dispatch:
+
+env:
+  RUST_BACKTRACE: "1"
 
 jobs:
   check:
@@ -31,3 +35,20 @@ jobs:
       - name: Build documentation
         run: cargo doc --no-deps
 
+  soak:
+    name: Real 10k connection test (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run 10k real TCP soak test
+        run: |
+          ulimit -Hn
+          ulimit -n 30000
+          ulimit -n
+          cargo test --release --test soak -- --ignored --nocapture
