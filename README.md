@@ -1,7 +1,7 @@
 # SkiffDB
 
 > **Status: Active Development (v0.1.0)**  
-> _SkiffDB (formerly working codename cachedb) is currently under heavy development and is not yet production-ready. APIs, internal layouts, and wire structures are evolving according to the project roadmap._
+> _SkiffDB is currently under heavy development and is not yet production-ready. APIs, internal layouts, and wire structures are evolving according to the project roadmap._
 
 v0.1.0 is an early learning release, not production ready. See [docs/benchmarks.md](docs/benchmarks.md) for initial benchmark numbers and the [CHANGELOG](CHANGELOG.md) for release details. Linux is needed for the server (epoll); the client and CLI also build on Windows.
 

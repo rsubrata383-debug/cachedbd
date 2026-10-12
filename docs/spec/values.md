@@ -1,6 +1,6 @@
-# Cachedb Value Model Specification (v0.1)
+# SkiffDB Value Model Specification (v0.1)
 
-This document defines the value types, memory model, limits, naming conventions, and key rules for Cachedb.
+This document defines the value types, memory model, limits, naming conventions, and key rules for SkiffDB.
 
 > **Version:** 0.1 (Frozen)  
 > **Status:** Frozen on 2026-10-10 (Phase 0 Week 2)  
@@ -11,16 +11,16 @@ This document defines the value types, memory model, limits, naming conventions,
 ## 1. Key Principles and Rules
 
 1. **Byte Content**: Keys are treated as arbitrary binary byte sequences (`&[u8]`). Any byte value from `0x00` to `0xFF` is allowed.
-2. **Safe Escaping in Shell Client**: Because keys can contain arbitrary binary, control characters, or non-printable bytes, the interactive client (`cachedb-cli`) must display non-printable bytes in a safe escaped form (e.g. `\xNN` or quoted strings).
+2. **Safe Escaping in Shell Client**: Because keys can contain arbitrary binary, control characters, or non-printable bytes, the interactive client (`skiff-cli`) must display non-printable bytes in a safe escaped form (e.g. `\xNN` or quoted strings).
 3. **Empty Keys**: Keys of length 0 are disallowed. Operations attempting to use `""` as a key return error `2006` (`ERR_EMPTY_KEY`). Keys must be at least 1 byte long.
 4. **Case Sensitivity**: Keys are strictly byte-sensitive. `"myKey"` and `"mykey"` are distinct keys.
-5. **Namespaces**: Cachedb does not enforce schema. Applications may use delimiters such as colons (`:`) or slashes (`/`) by convention (e.g. `"user:1001:profile"`).
+5. **Namespaces**: SkiffDB does not enforce schema. Applications may use delimiters such as colons (`:`) or slashes (`/`) by convention (e.g. `"user:1001:profile"`).
 
 ---
 
 ## 2. Value Types Catalog
 
-Cachedb values are divided into **Primitive Types** (Phase 1 / v0.1) and **Rich Data Structures** (Phase 3 / v0.3).
+SkiffDB values are divided into **Primitive Types** (Phase 1 / v0.1) and **Rich Data Structures** (Phase 3 / v0.3).
 
 ### 2.1 Primitive Types (Available in Phase 1 / v0.1)
 
@@ -71,7 +71,7 @@ In the core key-value engine, every entry in the keyspace consists of:
 
 ## 4. System Limits
 
-The limits in the value model align with [docs/spec/protocol.md](file:///c:/Users/Subrata/Desktop/rust/cachedb/docs/spec/protocol.md):
+The limits in the value model align with [`protocol.md`](protocol.md):
 
 | Limit Name | Limit Value | Scope | Enforcement |
 |---|---|---|---|
@@ -83,7 +83,7 @@ The limits in the value model align with [docs/spec/protocol.md](file:///c:/User
 | **Max Array / Collection Size**| 4,294,967,295 ($2^{32} - 1$) | Elements in list/set/table | Bounded by memory and max value size |
 | **Max Nesting Depth** | 8 levels | Nested collections (Array/Map)| Rejects with error `3005` (`ERR_MAX_DEPTH_EXCEEDED`) |
 
-> **Testing Large Values**: To test 100 MB values, raise both `max_value_size` and `max_frame_size` in `cachedb.toml`.
+> **Testing Large Values**: To test 100 MB values, raise both `max_value_size` and `max_frame_size` in `skiff.toml`.
 
 ---
 

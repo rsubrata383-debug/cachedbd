@@ -96,7 +96,10 @@ impl ProtoError {
     /// Error 1007: Unknown payload type tag.
     pub const ERR_UNKNOWN_TYPE_TAG: Self = Self::new(1007, "unknown type tag");
 
-    /// Error 2001: Unknown command or unsupported opcode.
+    /// Error 1008: Header specifies an unrecognized frame opcode.
+    pub const ERR_UNKNOWN_OPCODE: Self = Self::new(1008, "unknown frame opcode");
+
+    /// Error 2001: Unknown command verb.
     pub const ERR_UNKNOWN_COMMAND: Self = Self::new(2001, "unknown command");
 
     /// Error 2007: Command argument count exceeds maximum allowed limit.
@@ -142,7 +145,7 @@ impl TryFrom<u16> for Opcode {
             0x0001 => Ok(Self::Hello),
             0x0002 => Ok(Self::Command),
             0x0003 => Ok(Self::Push),
-            _ => Err(ProtoError::ERR_UNKNOWN_COMMAND),
+            _ => Err(ProtoError::ERR_UNKNOWN_OPCODE),
         }
     }
 }
@@ -499,14 +502,14 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_opcode_returns_error_2001() {
+    fn test_unknown_opcode_returns_error_1008() {
         let mut bytes = hex_to_bytes("CA DB 01 00 00 00 00 01 00 02 00 00 00 08");
         bytes[8] = 0x00;
         bytes[9] = 0x99; // opcode 0x0099 unknown
 
         let err = Header::decode(&bytes).unwrap_err();
-        assert_eq!(err, ProtoError::ERR_UNKNOWN_COMMAND);
-        assert_eq!(err.code(), 2001);
+        assert_eq!(err, ProtoError::ERR_UNKNOWN_OPCODE);
+        assert_eq!(err.code(), 1008);
     }
 
     #[test]

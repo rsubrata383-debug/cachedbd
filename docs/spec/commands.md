@@ -1,6 +1,6 @@
-# Cachedb Command Language Specification (v0.1)
+# SkiffDB Command Language Specification (v0.1)
 
-This document defines the core command language and dispatching rules for Cachedb v0.1.
+This document defines the core command language and dispatching rules for SkiffDB v0.1.
 
 > **Version:** 0.1 (Frozen)  
 > **Status:** Frozen on 2026-10-10 (Phase 0 Week 2)  
@@ -10,7 +10,7 @@ This document defines the core command language and dispatching rules for Cached
 
 ## 1. Design Choices and Conventions
 
-1. **Strict Lowercase Commands**: Command names over the wire MUST be strictly lowercase. The server performs exact byte matching without case conversion. Any uppercase letters trigger error `2001` (`ERR_UNKNOWN_COMMAND`). The CLI client (`cachedb-cli`) automatically normalizes the first word to lowercase before transmission.
+1. **Strict Lowercase Commands**: Command names over the wire MUST be strictly lowercase. The server performs exact byte matching without case conversion. Any uppercase letters trigger error `2001` (`ERR_UNKNOWN_COMMAND`). The CLI client (`skiff-cli`) automatically normalizes the first word to lowercase before transmission.
 2. **Missing Key on Fetch**: `fetch` returns `Nil` (`0x00`) on a missing key (standard cache miss behavior).
 3. **Drop Return Type**: `drop` returns an `Int` count of keys that were removed.
 4. **Put Return Type**: `put` returns `Bool` (`true` on successful store, `false` if `nx` or `xx` condition prevented write).
@@ -28,7 +28,7 @@ The frame payload contains an **Array** (`0x06`) of typed items:
 
 ### 2.2 Strict Lowercase Command Names
 Command verbs over the wire MUST be strictly lowercase. If a client transmits a command name containing uppercase letters (such as `"PUT"` or `"Ping"`), the server treats it as unknown and returns error **`2001`** (`ERR_UNKNOWN_COMMAND`).
-**Client Rule (`cachedb-cli`)**: The interactive CLI client automatically converts the first word of user input to lowercase before encoding the wire frame. Key names and argument values are never modified and remain strictly byte-sensitive.
+**Client Rule (`skiff-cli`)**: The interactive CLI client automatically converts the first word of user input to lowercase before encoding the wire frame. Key names and argument values are never modified and remain strictly byte-sensitive.
 
 ### 2.3 Dispatcher Table and Flags
 The server dispatches commands using an internal registry table:
@@ -68,7 +68,7 @@ Performs connection handshake, protocol negotiation, and optional authentication
   2. `client_name` (`Text`): Identifying name and version of the client library.
   3. `auth_token` (`Text` | `Bytes` | `Nil`, optional): Authentication credentials.
 - **Success Reply**: `Map` (`0x07`) containing server configuration and metadata:
-  - `"server_name"`: `"cachedbd"` (`Text`)
+  - `"server_name"`: `"skiffd"` (`Text`)
   - `"server_version"`: `"0.1.0"` (`Text`)
   - `"protocol_version"`: `1` (`Int`)
   - `"client_id"`: assigned connection ID (`Int`)
@@ -80,8 +80,8 @@ Performs connection handshake, protocol negotiation, and optional authentication
   - `2002` (`ERR_WRONG_ARG_COUNT`): Missing version or client name.
   - `5002` (`ERR_INVALID_PASSWORD`): Authentication token failed verification.
 - **Example**:
-  - Request: `["hello", 1, "cachedb-cli 0.1.0"]`
-  - Reply: `{"server_name": "cachedbd", "server_version": "0.1.0", "protocol_version": 1, "client_id": 1, "max_frame_size": 67108864, "max_key_size": 1024, "max_value_size": 33554432}`
+  - Request: `["hello", 1, "skiff-cli 0.1.0"]`
+  - Reply: `{"server_name": "skiffd", "server_version": "0.1.0", "protocol_version": 1, "client_id": 1, "max_frame_size": 67108864, "max_key_size": 1024, "max_value_size": 33554432}`
 
 ---
 
@@ -279,10 +279,10 @@ Future commands planned in the roadmap across upcoming phases:
 ### Phase 4: Durability (Weeks 27-34)
 - `snapshot`
 
-### Phase 5: Replication (Weeks 35-42)
-- `follow`, `promote`, `repl-status`, `wait-for`
+### Phase 5: Transactions, Messaging, and Replication (Weeks 35-42)
+- **Replication**: `follow`, `promote`, `repl-status`, `wait-for`
+- **Transactions**: `begin`, `commit`, `discard`, `watch`
+- **Messaging (Pub/Sub)**: `subscribe`, `unsubscribe`, `publish`
 
-### Phase 6: Transactions & Messaging (Weeks 43-48)
-- `begin`, `commit`, `discard`, `watch`
-- `subscribe`, `unsubscribe`, `publish`
-
+### Phase 6: Security, Scale, Hardening, and Release (Weeks 43-52)
+- Advanced security policies and multi-tenant authentication.

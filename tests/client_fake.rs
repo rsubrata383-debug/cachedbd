@@ -802,9 +802,9 @@ fn test_client_read_buffer_20k_small_replies_and_10mb_reply() {
     assert_eq!(fetched, Some(Value::Bytes(payload_10mb)));
 }
 
-// 21. unknown frame opcode returns 2001 ERR_UNKNOWN_COMMAND and closes connection
+// 21. unknown frame opcode returns 1008 ERR_UNKNOWN_OPCODE and closes connection
 #[test]
-fn test_unknown_frame_opcode_returns_2001_and_closes() {
+fn test_unknown_frame_opcode_returns_1008_and_closes() {
     let server = TestBlockingServer::start();
     let mut stream = std::net::TcpStream::connect(server.addr()).expect("connect");
 
@@ -826,13 +826,13 @@ fn test_unknown_frame_opcode_returns_2001_and_closes() {
     let mut acc = Vec::new();
     let reply = common::read_one_frame(&mut stream, &mut acc);
 
-    // Verify error code 2001
+    // Verify error code 1008
     assert_ne!(reply.header.flags & FLAG_ERROR, 0);
     assert_ne!(reply.header.flags & FLAG_RESPONSE, 0);
     match reply.payload {
         Value::Error { code, message } => {
-            assert_eq!(code, 2001);
-            assert_eq!(message, "unknown command");
+            assert_eq!(code, 1008);
+            assert_eq!(message, "unknown frame opcode");
         }
         other => panic!("expected Value::Error, got {other:?}"),
     }
@@ -840,5 +840,5 @@ fn test_unknown_frame_opcode_returns_2001_and_closes() {
     // Verify server closed connection
     let mut buf = [0u8; 16];
     let n = stream.read(&mut buf).expect("read after close");
-    assert_eq!(n, 0, "expected EOF after error 2001");
+    assert_eq!(n, 0, "expected EOF after error 1008");
 }

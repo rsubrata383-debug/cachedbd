@@ -1,6 +1,5 @@
-# Cachedb: 1-Year Roadmap to Build an Original In-Memory Database From Scratch
+# SkiffDB: 1-Year Roadmap to Build an Original In-Memory Database From Scratch
 
-> **Working codename:** Cachedb.
 > **Goal:** a fast, durable, networked, in-memory data store with its own wire protocol, command language, data structures, storage formats, replication, and tooling. Nothing copied; every format and API is your own design.
 
 ---
@@ -23,7 +22,7 @@
 ## Repository Layout (suggested)
 
 ```
-cachedb/
+skiffdb/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── README.md
@@ -77,8 +76,8 @@ cachedb/
 │   │   ├── config.rs
 │   │   └── auth.rs
 │   └── bin/
-│       ├── cachedb-cli.rs      # shell client
-│       └── cachedb-bench.rs    # benchmark tool
+│       ├── skiff-cli.rs        # shell client
+│       └── skiff-bench.rs      # benchmark tool
 ├── tests/                      # integration tests only
 │   ├── common/
 │   │   └── mod.rs              # shared test helpers (test harness)
@@ -119,7 +118,7 @@ cachedb/
 - [x] Set up sanitizers (address, undefined behavior, thread) or the equivalent for your language.
 - [x] Create the `docs/journal.md` and `docs/spec/` folders.
 - [x] Write the project vision: target workloads (cache, session store, queue, leaderboard), non-goals, and performance targets (for example 200k ops/sec on one core, p99 latency under 1 ms).
-- [x] Decide naming: project, binary names (`cachedbd` server, `cachedb-cli` client), file extensions, and default port.
+- [x] Decide naming: project, binary names (`skiffd` server, `skiff-cli` client, `skiff-bench`), file extensions, and default port.
 
 ### Week 2: Core specs
 
@@ -179,15 +178,15 @@ cachedb/
 
 ### Week 8: Client and tooling
 
-- [x] Build `cachedb-cli`, an interactive client with history, pipelined script mode, and pretty printing.
-- [ ] Build a small client library (one language) with connection pooling and pipelining.
-- [ ] Build a basic load generator (`cachedb-bench`) with configurable key size, value size, read/write ratio, and connection count.
-- [ ] Write the first benchmark report and commit it.
-- [ ] Tag `v0.1`.
+- [x] Build `skiff-cli`, an interactive client with history, pipelined script mode, and pretty printing.
+- [x] Build a small client library (one language) with connection pooling and pipelining.
+- [x] Build a basic load generator (`skiff-bench`) with configurable key size, value size, read/write ratio, and connection count.
+- [x] Write the first benchmark report and commit it.
+- [ ] Tag `v0.1.0`.
 
 **Exit criteria:** 100k+ ops/sec on one core with pipelining; no memory leaks under a 1-hour soak test; parser fuzzing clean.
 
-*(Scope note for v0.1: commands `append`, `swap`, `auth`, and `use` are deferred to Phase 2 to focus v0.1 on the 7 core primitives and bump).*
+_(Scope note for v0.1: Phase 1 command leftovers `append`, `swap`, `auth`, `use`, and `type` are scheduled for Phase 2: `append`, `swap`, and `type` in Weeks 13-14 with value mutators/typing, and `auth` and `use` in Weeks 15-16 with server management and connection state)._
 
 ---
 
@@ -375,7 +374,7 @@ Each type follows the same routine: spec the commands, implement the structure, 
 
 - [ ] Document the durability guarantees per sync policy in plain language.
 - [ ] Benchmark recovery time vs dataset size.
-- [ ] Add backup/restore tooling (`cachedb-backup`).
+- [ ] Add backup/restore tooling (`skiff-backup`).
 - [ ] Tag `v0.4`.
 
 **Exit criteria:** 10,000 random-kill crash tests with zero acknowledged-write loss under the `always` policy and bounded loss under the others; recovery time documented.
@@ -450,7 +449,7 @@ Each type follows the same routine: spec the commands, implement the structure, 
 - [ ] Authentication (passwords hashed with a standard slow hash from a vetted library; do not invent cryptography).
 - [ ] Access control: per-user permissions on commands and key patterns.
 - [ ] TLS support via a vetted library; do not implement TLS yourself.
-- [ ] Bind-address safety defaults (listen on localhost unless configured).
+- [x] Bind-address safety defaults (listen on localhost 127.0.0.1 unless configured).
 - [ ] Rate limits and a maximum client count.
 
 ### Weeks 44-46: Pick ONE scale-out stretch goal
@@ -543,23 +542,23 @@ Design questions to settle in the spec: byte order, maximum sizes, how errors ca
 
 ## Appendix B: Starting Command Set (your own naming)
 
-| Group        | Commands                                                                                               |
-| ------------ | ------------------------------------------------------------------------------------------------------ |
-| Connection   | `hello`, `ping`, `auth`, `use`, `quit`                                                                 |
-| Values       | `put`, `fetch`, `drop`, `has`, `size`, `bump`, `append`, `swap`                                        |
+| Group      | Commands                                                        |
+| ---------- | --------------------------------------------------------------- |
+| Connection | `hello`, `ping`, `auth`, `use`, `quit`                          |
+| Values     | `put`, `fetch`, `drop`, `has`, `size`, `bump`, `append`, `swap` |
 
-*(Note: `append`, `swap`, `auth`, and `use` are deferred to Phase 2 to focus v0.1 on the 7 core primitives and bump).*
-| Expiry       | `expire`, `expire-at`, `ttl`, `persist`                                                                |
-| Keyspace     | `scan`, `rename`, `copy`, `type`, `random-key`, `wipe`                                                 |
-| Sequences    | `seq-push-front`, `seq-push-back`, `seq-pop-front`, `seq-pop-back`, `seq-range`, `seq-len`, `seq-trim` |
-| Tables       | `tab-set`, `tab-get`, `tab-drop`, `tab-all`, `tab-len`, `tab-bump`                                     |
-| Pools        | `pool-add`, `pool-drop`, `pool-has`, `pool-len`, `pool-union`, `pool-inter`, `pool-diff`               |
-| Ladders      | `lad-add`, `lad-drop`, `lad-score`, `lad-rank`, `lad-range`, `lad-count`, `lad-pop-min`, `lad-pop-max` |
-| Bits         | `bit-set`, `bit-get`, `bit-count`, `bit-op`                                                            |
-| Messaging    | `subscribe`, `unsubscribe`, `publish`                                                                  |
-| Transactions | `begin`, `commit`, `discard`, `watch`                                                                  |
-| Admin        | `config-get`, `config-set`, `stats`, `slowlog`, `snapshot`, `memory`                                   |
-| Replication  | `follow`, `promote`, `repl-status`, `wait-for`                                                         |
+*(Note: Phase 1 command leftovers `append`, `swap`, `auth`, `use`, and `type` are scheduled for Phase 2: `append`, `swap`, and `type` in Weeks 13-14 with value mutators/typing, and `auth` and `use` in Weeks 15-16 with server management and connection state).*
+| Expiry | `expire`, `expire-at`, `ttl`, `persist` |
+| Keyspace | `scan`, `rename`, `copy`, `type`, `random-key`, `wipe` |
+| Sequences | `seq-push-front`, `seq-push-back`, `seq-pop-front`, `seq-pop-back`, `seq-range`, `seq-len`, `seq-trim` |
+| Tables | `tab-set`, `tab-get`, `tab-drop`, `tab-all`, `tab-len`, `tab-bump` |
+| Pools | `pool-add`, `pool-drop`, `pool-has`, `pool-len`, `pool-union`, `pool-inter`, `pool-diff` |
+| Ladders | `lad-add`, `lad-drop`, `lad-score`, `lad-rank`, `lad-range`, `lad-count`, `lad-pop-min`, `lad-pop-max` |
+| Bits | `bit-set`, `bit-get`, `bit-count`, `bit-op` |
+| Messaging | `subscribe`, `unsubscribe`, `publish` |
+| Transactions | `begin`, `commit`, `discard`, `watch` |
+| Admin | `config-get`, `config-set`, `stats`, `slowlog`, `snapshot`, `memory` |
+| Replication | `follow`, `promote`, `repl-status`, `wait-for` |
 
 ## Appendix C: Testing Strategy
 

@@ -1,4 +1,4 @@
-# Cachedb Design Journal
+# SkiffDB Design Journal
 
 Record of major architecture decisions, alternatives considered, and trade-offs.
 
@@ -43,9 +43,9 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 ### Decision 4: Server Binary Name
 
 - **Options**:
-  - `cachedb`: Matches crate package name.
-  - `cachedbd`: Trailing `d` indicates daemon/server process.
-- **Choice**: `cachedbd` (mapped to `src/main.rs` via `[[bin]]` in `Cargo.toml`).
+  - `skiff`: Matches crate package name.
+  - `skiffd`: Trailing `d` indicates daemon/server process.
+- **Choice**: `skiffd` (mapped to `src/main.rs` via `[[bin]]` in `Cargo.toml`).
 - **Reason**: Distinguishes the database daemon server cleanly from client and tooling binaries.
 - **What would make us revisit it**: If users expect the package name to match the server binary name directly without confusion.
 
@@ -54,9 +54,9 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 ### Decision 5: Client Shell Binary Name
 
 - **Options**:
-  - `cachedb-shell`: Emphasizes interactive REPL shell.
-  - `cachedb-cli`: Standard industry convention (e.g. `redis-cli`) and matches file layout.
-- **Choice**: `cachedb-cli` (`src/bin/cachedb-cli.rs`).
+  - `skiff-shell`: Emphasizes interactive REPL shell.
+  - `skiff-cli`: Standard industry convention (e.g. `redis-cli`) and matches file layout.
+- **Choice**: `skiff-cli` (`src/bin/skiff-cli.rs`).
 - **Reason**: Familiar naming convention for command-line database clients and matches repository layout.
 - **What would make us revisit it**: If the tool becomes solely an interactive TUI/REPL and needs distinct naming.
 
@@ -65,9 +65,9 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 ### Decision 6: Benchmark Binary Name
 
 - **Options**:
-  - `cachedb-load`: Load generation tool.
-  - `cachedb-bench`: Matches repository layout (`src/bin/cachedb-bench.rs`).
-- **Choice**: `cachedb-bench`.
+  - `skiff-load`: Load generation tool.
+  - `skiff-bench`: Matches repository layout (`src/bin/skiff-bench.rs`).
+- **Choice**: `skiff-bench`.
 - **Reason**: Standard and descriptive name for database benchmarking tools.
 - **What would make us revisit it**: If separate stress testing tools are split off.
 
@@ -87,9 +87,9 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 ### Decision 8: Configuration File Format
 
 - **Options**:
-  - `cachedb.conf`: Custom key-value text format.
-  - `cachedb.toml`: Standard TOML format.
-- **Choice**: `cachedb.toml`.
+  - `skiff.conf`: Custom key-value text format.
+  - `skiff.toml`: Standard TOML format.
+- **Choice**: `skiff.toml`.
 - **Reason**: Standard, structured, well-supported in Rust ecosystem, and easy to read and edit.
 - **What would make us revisit it**: If minimal footprint requirements preclude TOML parsing in embedded deployments.
 
@@ -149,7 +149,7 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - Pure Binary (Header + typed payload items): Fast zero-copy parsing, compact, no string escape overhead.
   - Text-based (RESP or HTTP-like): Human-readable over raw netcat, but slower and requires string parsing.
 - **Choice**: Pure Binary.
-- **Reason**: Primary goals are extreme speed and low latency (200k ops/sec, < 1ms p99). `cachedb-cli` provides human interaction.
+- **Reason**: Primary goals are extreme speed and low latency (200k ops/sec, < 1ms p99). `skiff-cli` provides human interaction.
 - **What would make us revisit it**: If manual debugging with raw TCP tools without our CLI is deemed mandatory.
 
 ---
@@ -161,7 +161,7 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - 4 bytes (`u32`): Fixed header offset, handles payloads up to limits (32 MB / 64 MB default).
   - 2 bytes (`u16`): Saves 2 bytes per frame header, but limits single frame payloads to 64 KB.
 - **Choice**: 4 bytes `u32` length field, with a configurable `max_frame_size` (default 64 MB).
-- **Reason**: Simplifies frame handling so multi-frame chunking is only needed for massive payloads. The 64 MB limit can be raised in `cachedb.toml`.
+- **Reason**: Simplifies frame handling so multi-frame chunking is only needed for massive payloads. The 64 MB limit can be raised in `skiff.toml`.
 - **What would make us revisit it**: We may revisit chunking with the `more-frames` flag in Phase 2, Week 15 when testing 100 MB values to prevent huge contiguous memory allocations.
 
 ---
@@ -214,7 +214,7 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - Arbitrary Binary (`Bytes`): Keys can contain any bytes `0x00`-`0xFF` up to key limit.
   - UTF-8 Text Only (`Text`): Keys must be valid UTF-8 strings.
 - **Choice**: Arbitrary Binary (`Bytes`).
-- **Rule**: Shell client (`cachedb-cli`) must display non-printable or unusual bytes in a safe escaped form.
+- **Rule**: Shell client (`skiff-cli`) must display non-printable or unusual bytes in a safe escaped form.
 - **Reason**: Maximum flexibility for applications storing binary UUIDs or hashed keys; zero UTF-8 validation overhead on the engine lookup hot path.
 - **What would make us revisit it**: If text-only debugging across third-party tools requires strictly rejecting non-UTF-8 bytes.
 
@@ -249,10 +249,10 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - **Date**: 2026-10-10
 - **Options**:
   - 64 KB: Permissive limit, but allows massive keys that cause memory bloat and hash bucket inefficiency.
-  - 1 KB (1,024 bytes): Default limit, plenty of space for real-world hierarchical keys (e.g. `tenant:user:session:uuid`) while keeping index overhead bounded. Configurable via `max_key_size` in `cachedb.toml`.
+  - 1 KB (1,024 bytes): Default limit, plenty of space for real-world hierarchical keys (e.g. `tenant:user:session:uuid`) while keeping index overhead bounded. Configurable via `max_key_size` in `skiff.toml`.
   - 256 bytes: Very strict, might reject long URLs or compound keys.
 - **Choice**: 1 KB (1,024 bytes default, configurable).
-- **Reason**: Protects against memory bloat from oversized keys while providing ample room for standard naming conventions. Operators with special requirements can raise `max_key_size` in `cachedb.toml`.
+- **Reason**: Protects against memory bloat from oversized keys while providing ample room for standard naming conventions. Operators with special requirements can raise `max_key_size` in `skiff.toml`.
 - **What would make us revisit it**: If major target workloads require embedding large serialized payloads or multi-field tokens directly within key strings.
 
 ---
@@ -266,7 +266,7 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - Case-Insensitive ASCII: Server converts command names to lowercase.
   - Strictly Lowercase: Server requires exact lowercase bytes over the wire.
 - **Choice**: Strictly lowercase command names over the wire.
-- **Rule**: If a wire frame contains uppercase letters in the command name, the server returns error `2001` (`ERR_UNKNOWN_COMMAND`). The interactive client (`cachedb-cli`) converts the first word to lowercase before sending.
+- **Rule**: If a wire frame contains uppercase letters in the command name, the server returns error `2001` (`ERR_UNKNOWN_COMMAND`). The interactive client (`skiff-cli`) converts the first word to lowercase before sending.
 - **Reason**: Maximum server dispatch speed via direct byte comparison with zero case-folding overhead on the network loop.
 - **What would make us revisit it**: If raw socket clients report significant user friction from case sensitivity errors.
 
@@ -377,11 +377,11 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - **Date**: 2026-10-10
 - **Summary**: Comprehensive cross-document consistency audit completed across all specification and design documents. All 29 architectural decisions have been resolved and closed. Specifications `protocol.md`, `values.md`, `errors.md`, and `commands.md` are officially frozen at version 0.1.
 - **Documents Frozen**:
-  - [docs/spec/protocol.md](file:///c:/Users/Subrata/Desktop/rust/cachedb/docs/spec/protocol.md) (v0.1): 14-byte header, big-endian, pure binary, 8 verified hex examples, `FLAG_MORE_FRAMES` reserved.
-  - [docs/spec/values.md](file:///c:/Users/Subrata/Desktop/rust/cachedb/docs/spec/values.md) (v0.1): Binary keys, 1 KB key limit, 32 MB default value limit, no empty keys, primitive and rich data type catalog.
-  - [docs/spec/errors.md](file:///c:/Users/Subrata/Desktop/rust/cachedb/docs/spec/errors.md) (v0.1): 33 unique codes across semantic 1000s ranges with connection drop semantics.
-  - [docs/spec/commands.md](file:///c:/Users/Subrata/Desktop/rust/cachedb/docs/spec/commands.md) (v0.1): Strict lowercase commands, 9 Phase 1 operations (`hello`, `ping`, `put`, `fetch`, `drop`, `has`, `size`, `bump`, `quit`).
-  - [docs/design/threading.md](file:///c:/Users/Subrata/Desktop/rust/cachedb/docs/design/threading.md): Single-threaded core, helper threads via channels, `Clock`/`AsyncStream`/`Disk` test traits, isolated unsafe in `src/net/sys.rs`.
+  - [`docs/spec/protocol.md`](spec/protocol.md) (v0.1): 14-byte header, big-endian, pure binary, 8 verified hex examples, `FLAG_MORE_FRAMES` reserved.
+  - [`docs/spec/values.md`](spec/values.md) (v0.1): Binary keys, 1 KB key limit, 32 MB default value limit, no empty keys, primitive and rich data type catalog.
+  - [`docs/spec/errors.md`](spec/errors.md) (v0.1): 33 unique codes across semantic 1000s ranges with connection drop semantics.
+  - [`docs/spec/commands.md`](spec/commands.md) (v0.1): Strict lowercase commands, 9 Phase 1 operations (`hello`, `ping`, `put`, `fetch`, `drop`, `has`, `size`, `bump`, `quit`).
+  - [`docs/design/threading.md`](design/threading.md): Single-threaded core, helper threads via channels, `Clock`/`AsyncStream`/`Disk` test traits, isolated unsafe in `src/net/sys.rs`.
 - **Errata and Fixes Applied During Review**:
   - Updated `docs/spec/protocol.md` overview to explicitly note that `FLAG_MORE_FRAMES` is reserved in v0.1.
   - Added formal version and status header blocks across all four specification files.
@@ -392,7 +392,7 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   3. Increment the spec document version line (e.g. `v0.1.1` for errata/clarifications, `v0.2` for breaking or additive feature changes).
   4. Verify all modified hex examples against an automated validation script.
 - **Phase 0 Exit Status**:
-  - All Phase 0 items in `cachedb-roadmap.md` are completed (compiler sanitizers explicitly deferred to Linux pre-Week 5 per Decision 6).
+  - All Phase 0 items in `skiffdb-roadmap.md` are completed (compiler sanitizers explicitly deferred to Linux pre-Week 5 per Decision 6).
   - All four cargo checks pass with 0 warnings; all 8 protocol hex examples pass validation.
   - Ready to proceed to Phase 1 (Week 3: Event Loop on Linux `epoll`).
 
@@ -405,8 +405,8 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 - **Changes**:
   - Renamed `README.MD` to `README.md` using two-step `git mv` for case-sensitive git tracking.
   - Wrote concise `README.md` in simple English with project overview, status ("Phase 0 done, specs v0.1 frozen. Phase 1 not started"), build/check commands, binary names, default port (`7379`), primary OS (Linux / WSL2), and doc links. Removed stray `manifest.html` link.
-  - Removed non-existent `cachedb.md` entry from the repository layout tree in `cachedb-roadmap.md`.
-  - Verified no dangling links to `README.MD` or `cachedb.md` exist in the repository.
+  - Removed non-existent `skiffdb.md` entry from the repository layout tree in `skiffdb-roadmap.md`.
+  - Verified no dangling links to `README.MD` or `skiffdb.md` exist in the repository.
 
 ---
 
@@ -597,7 +597,7 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
   - `handle_accept` wraps `stream.set_nonblocking(true)` safely, logs and ignores `ECONNABORTED`, breaks out of the accept loop for the current tick on `EMFILE`/`ENFILE` without returning an error, and logs other accept errors before continuing.
   - Documented on the `Handler` trait and `on_event` in `src/net/event_loop.rs` that returning `Err` is fatal to the event loop, requiring handlers to return `Err` solely for unrecoverable subsystem failures.
 - **Verification**: Created regression tests in `examples/echo_nonblocking.rs`:
-  - `test_client_reset_mid_session_does_not_crash_server`: A client sets `SO_LINGER 0` via newly added `cachedb::net::sys::set_linger_zero` and drops mid-session; server isolates the error, cleans up the connection, and remains fully functional for remaining clients.
+  - `test_client_reset_mid_session_does_not_crash_server`: A client sets `SO_LINGER 0` via newly added `skiffdb::net::sys::set_linger_zero` and drops mid-session; server isolates the error, cleans up the connection, and remains fully functional for remaining clients.
   - `test_client_buffer_overflow_disconnects_client_only`: A client overflows a small read buffer capacity limit (64 bytes); server disconnects only the offending client while other clients continue operating cleanly.
 
 ### Fix 2 (HIGH 2): Half-Close / EOF Preserving Queued Output
@@ -871,7 +871,7 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
     - Map with an unknown pair flanked by known pairs drops only the unknown pair and retains the known pairs with accurate consumed byte count.
     - Array with an unknown item in the middle skips the unknown item and retains surrounding items.
 - **Part B Results (Fuzz Targets & Corpus)**:
-  - Created standalone package `fuzz/` (`cachedb-fuzz`) with an empty workspace so it does not affect root crate builds or pollute normal cargo workflows.
+  - Created standalone package `fuzz/` (`skiffdb-fuzz`) with an empty workspace so it does not affect root crate builds or pollute normal cargo workflows.
   - Implemented 3 dedicated fuzz targets in `fuzz/fuzz_targets/`:
     - `decode_frame`: Validates crash-free decoding on arbitrary binary input, ensures `used <= data.len()`, and verifies re-encode / re-decode equality for valid frames.
     - `decode_value`: Validates crash-free item AST decoding, ensures `used <= data.len()`, and validates re-encode / re-decode round-trip equality for valid values.
@@ -910,7 +910,7 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 
 ## 2026-10-11: Week 5 Core Complete (Premature Milestone Note)
 
-> **Note**: This milestone marked core wire framing and encoding/decoding completion, but Week 5 in `cachedb-roadmap.md` also requires HELLO negotiation, hard limits (max arguments), and a one-hour fuzzing run. See correction and Step 6 below.
+> **Note**: This milestone marked core wire framing and encoding/decoding completion, but Week 5 in `skiffdb-roadmap.md` also requires HELLO negotiation, hard limits (max arguments), and a one-hour fuzzing run. See correction and Step 6 below.
 
 - **Date**: 2026-10-11
 - **Summary**: Core binary frame encoding and decoding completed and verified across all platforms and CI workflows.
@@ -938,7 +938,7 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 ## 2026-10-11: Correction: Week 5 is Not Done
 
 - **Date**: 2026-10-11
-- **Reason**: The earlier entry marked Week 5 complete based on parser/serializer milestones. However, `cachedb-roadmap.md` defines three remaining deliverables for Week 5:
+- **Reason**: The earlier entry marked Week 5 complete based on parser/serializer milestones. However, `skiffdb-roadmap.md` defines three remaining deliverables for Week 5:
   1. Protocol version negotiation (`HELLO` exchange).
   2. Hard limits (`max_args` of 65,536 items on command requests, checked before reading items or allocating).
   3. Fuzzing campaign for an hour with zero crashes.
@@ -1206,7 +1206,7 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 
 ### Architecture & Decisions:
 1. **Zero-Dependency Property Test Harness & Shrinker**:
-   - Implemented `XorShift64` PRNG and multi-seed runner (`CACHEDB_PROP_SEEDS`, default 24 seeds).
+   - Implemented `XorShift64` PRNG and multi-seed runner (`SKIFFDB_PROP_SEEDS`, default 24 seeds).
    - Shrinker algorithm: iteratively tries removing halves (2), quarters (4), and single operations until reaching minimal failing operation sequences.
    - Verified via `test_deliberately_wrong_reference_shrinker` (`#[should_panic]`): minimized a 100-operation sequence down to $\le 4$ operations.
    - Property tests cover: mixed models with differential checking against `std::collections::HashMap`, complex key shapes (empty, binary, embedded nulls, 4 KB), severe hash collisions (modulo buckets and circular wraparound), resize invariants, permutation order independence, and overwrite/remove idempotence.
@@ -1516,7 +1516,7 @@ We formalized the exact coercion and error mapping as follows:
 5. **Reply Serialization Fallback**:
    - If `encode_frame` fails when serializing an outgoing reply frame (for example, if a payload exceeds maximum wire dimensions or collection nesting exceeds 8 levels), the server catches the failure and transmits a fallback error frame containing `ERR_INTERNAL_ERROR` (`7001`) with the client's original `request_id`.
 6. **Host Architecture Verification**:
-   - `src/main.rs` checks for `target_os = "linux"`. On non-Linux platforms (e.g. Windows), it prints `"cachedbd needs Linux (epoll)"` and exits with code 1 without printing a misleading "listening" message.
+   - `src/main.rs` checks for `target_os = "linux"`. On non-Linux platforms (e.g. Windows), it prints `"skiffd needs Linux (epoll)"` and exits with code 1 without printing a misleading "listening" message.
 
 ### 2. Architecture Items Deferred to Later Phases
 
@@ -1564,9 +1564,9 @@ We formalized the exact coercion and error mapping as follows:
 ## 2026-10-12: Week 8 Step 1 — Synchronous Client Library Implementation
 
 - **Date**: 2026-10-12
-- **Scope**: Zero-dependency synchronous client library (`cachedb::client::Client`), fault injection testing, and pipelined throughput validation.
+- **Scope**: Zero-dependency synchronous client library (`skiffdb::client::Client`), fault injection testing, and pipelined throughput validation.
 
-### 1. Synchronous Client Design (`cachedb::client`)
+### 1. Synchronous Client Design (`skiffdb::client`)
 
 - **Transport**: Standard blocking `std::net::TcpStream` with configurable `connect_timeout`, `read_timeout`, and `write_timeout` via `ClientConfig`.
 - **Handshake & Metadata**: Automated `HELLO` protocol negotiation (version 1) storing advertised server limits in `ServerInfo`.
@@ -1588,7 +1588,7 @@ We formalized the exact coercion and error mapping as follows:
 ## 2026-10-12: Week 8 Step 2 — Client Hardening & CLI Implementation
 
 - **Date**: 2026-10-12
-- **Scope**: Pipeline chunking deadlock prevention, cursor-based read buffering, `cachedb-cli` utility implementation, interactive REPL, and E2E testing.
+- **Scope**: Pipeline chunking deadlock prevention, cursor-based read buffering, `skiff-cli` utility implementation, interactive REPL, and E2E testing.
 
 ### 1. Client Hardening (`src/client.rs`)
 
@@ -1602,7 +1602,7 @@ We formalized the exact coercion and error mapping as follows:
   - Replaced per-frame `drain(..used)` with `read_cursor: usize` and 64 KB block socket reads.
   - Buffer is compacted (shifting unconsumed bytes to the front) only when `read_cursor > buf.len() / 2` or empty, reducing buffer shift overhead to $O(1)$ amortized.
 
-### 2. Command-Line Interface (`cachedb-cli`)
+### 2. Command-Line Interface (`skiff-cli`)
 
 - **Core Engine (`src/cli.rs`)**:
   - `parse_line`: Whitespace splitting respecting double quotes and escapes (`\"`, `\\`, `\n`, `\t`, `\xHH`).
@@ -1610,7 +1610,7 @@ We formalized the exact coercion and error mapping as follows:
   - `format_value`: Redis-cli style formatting (`(nil)`, `(integer)`, `(float)`, `(bool)`, quoted text with escapes, UTF-8/hex bytes, indented nested arrays with 3-space alignment, maps, `(error CODE) MSG`, and >1 MB safety truncation).
   - `run`: Handles one-shot commands (exiting 0 on success, 1 on server errors, 2 on usage/network failure) and interactive REPL mode.
 - **Interactive REPL**:
-  - Automatically identifies terminal sessions (`std::io::IsTerminal`), emitting banner and `cachedb> ` prompt.
+  - Automatically identifies terminal sessions (`std::io::IsTerminal`), emitting banner and `skiff> ` prompt.
   - Builtins: `help`, `exit`, `quit` (transmitting `quit` to server before graceful termination).
   - Resilient session loop: Syntax errors and server errors (`ClientError::Server`) log to `stderr` and continue; socket drops terminate with exit code 2.
 
@@ -1663,9 +1663,9 @@ Week 8 Step 3c: tests used a wrong HELLO payload; server was right; fixed helper
 
 ---
 
-## 2026-10-12: Week 8 Step 4 — Benchmark Load Generator (`cachedb-bench`)
+## 2026-10-12: Week 8 Step 4 — Benchmark Load Generator (`skiff-bench`)
 
-- **Scope**: Multi-threaded load generator implementation (`src/bench.rs` and `src/bin/cachedb-bench.rs`), workload distributions, fixed-size latency histogram, Linux E2E test, and CI workflow.
+- **Scope**: Multi-threaded load generator implementation (`src/bench.rs` and `src/bin/skiff-bench.rs`), workload distributions, fixed-size latency histogram, Linux E2E test, and CI workflow.
 
 ### Architecture Decisions & Trade-Offs
 
@@ -1746,8 +1746,8 @@ Otherwise, the chunk is pushed as its own independent queue chunk.
 ### 1. Release Documentation & Artifacts
 Prepared documentation and operational artifacts for the `v0.1.0` release:
 - **`README.md`**: Updated Phase 1 milestones up through Week 8 to "Done", added a concise "Quick start" section covering build, daemon launch, CLI one-shot / REPL usage, and benchmark invocation, and refined the status notice with links to documentation.
-- **`CHANGELOG.md`**: Added initial changelog summarizing Added components (wire protocol, Robin Hood hash table, command engine, structured errors, epoll server, client library, `cachedb-cli`, `cachedb-bench`, and fuzz/CI tooling), verified Performance profiles, and listed all Known limits.
-- **`docs/release-checklist.md`**: Added a concise human checklist covering CI status, benchmark review, documentation verification, manual roadmap checkbox updates, repository license confirmation, and tag creation (`git tag -a v0.1.0 -m "cachedb v0.1.0"`).
+- **`CHANGELOG.md`**: Added initial changelog summarizing Added components (wire protocol, Robin Hood hash table, command engine, structured errors, epoll server, client library, `skiff-cli`, `skiff-bench`, and fuzz/CI tooling), verified Performance profiles, and listed all Known limits.
+- **`docs/release-checklist.md`**: Added a concise human checklist covering CI status, benchmark review, documentation verification, manual roadmap checkbox updates, repository license confirmation, and tag creation (`git tag -a v0.1.0 -m "skiffdb v0.1.0"`).
 - **`docs/benchmarks.md`**: Replaced placeholder benchmark tables with real CI measurements gathered across three distinct GitHub Actions runs.
 
 ### 2. Real CI Benchmark Measurements (Runs 1–3)
@@ -1766,10 +1766,10 @@ Identified several high-leverage architectural opportunities for subsequent phas
 
 ---
 
-## 2026-10-12: Phase 1 — Project Renaming to SkiffDB
+## 2026-10-12: Phase 1 — Project Architecture & Brand Identity: SkiffDB
 
-### 1. Motivation & Naming Choice
-The initial working codename `cachedb` was functional but generic. We selected **SkiffDB** (`skiffdb`) as the permanent brand name.
+### 1. Naming & Philosophy
+We selected **SkiffDB** (`skiffdb`) as the permanent brand name.
 - **Character & Metaphor**: A skiff is a light, fast, agile watercraft with zero unnecessary baggage. This directly reflects the project's engineering philosophy: single-threaded event loop, zero-dependency `std`-only Rust, non-allocating Robin Hood hash table probing, deterministic protocol parsing, and low latency.
 - **Binary Suite**:
   - `skiffd`: The lightweight single-threaded database daemon.
@@ -1777,7 +1777,22 @@ The initial working codename `cachedb` was functional but generic. We selected *
   - `skiff-bench`: The high-throughput load generator and pipeline latency benchmark tool.
 - **Default Extensions**: `.skfj` for write-ahead journal files and `.skfs` for snapshot image files.
 
-### 2. Protocol Wire Compatibility Preservation
-To honor the strict freeze of the Phase 0 Protocol v0.1 specification (`docs/spec/`):
-- Wire magic bytes remain `0x43444231` (`CDB1`). No wire protocol bits or header structures were altered.
+### 2. Protocol Wire Magic
+The wire protocol header begins with fixed magic bytes `0xCA 0xDB` (`0xCADB`).
 - Server handshake (`HELLO`) reports `server_name = "skiffd"`, and default client connection identifies as `client_name = "skiff-client/0.1.0"`.
+
+---
+
+## 2026-10-12: Frozen Specification Amendment — Dedicated Framing Error 1008 ERR_UNKNOWN_OPCODE
+
+### 1. Context & Motivation
+When parsing incoming 14-byte frame headers, `Header::decode` validates the 2-byte big-endian `opcode` field against registered opcodes (`0x0001` HELLO, `0x0002` COMMAND, `0x0003` PUSH). Previously, receiving an unrecognized opcode returned error code `2001` (`ERR_UNKNOWN_COMMAND`).
+However:
+1. Opcode decoding is a layer-1 wire framing check, whereas `2001 ERR_UNKNOWN_COMMAND` belongs to layer-2 command syntax (range 2000–2999) and is documented as `Closed = No` (connection remains open).
+2. For an invalid frame opcode, the framing contract requires closing the connection because frame semantics cannot be known. Emitting `2001` then closing violated the `Closed = No` contract for code `2001`.
+
+### 2. Decision & Specification Amendment
+- Added dedicated fatal framing error code `1008` `ERR_UNKNOWN_OPCODE` (`"unknown frame opcode"`, `Closed = Yes`) to `docs/spec/errors.md` in Range 1000–1999.
+- Updated `docs/spec/protocol.md` opcode field row to document `1008 ERR_UNKNOWN_OPCODE` and connection teardown.
+- Removed opcode mention from `ERR_UNKNOWN_COMMAND` (code 2001 now purely denotes unregistered command verbs).
+- Updated `src/proto/header.rs`, `src/cmd/error.rs`, `src/server.rs` salvage list, and integration tests to return 1008 on invalid frame opcodes.

@@ -1,4 +1,4 @@
-//! Integration tests for Cachedb command parsing, validation, dispatching, and handlers.
+//! Integration tests for SkiffDB command parsing, validation, dispatching, and handlers.
 
 mod common;
 

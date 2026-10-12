@@ -273,7 +273,7 @@ mod tests {
     fn test_hello_request_round_trip() {
         let req = HelloRequest::new(
             1,
-            "cachedb-cli 0.1.0".to_string(),
+            "skiff-cli 0.1.0".to_string(),
             Some("secret-token".to_string()),
         );
         let val = req.to_value();
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_hello_response_round_trip() {
-        let mut resp = HelloResponse::new("cachedbd".to_string(), "0.1.0".to_string(), 1, 42);
+        let mut resp = HelloResponse::new("skiffd".to_string(), "0.1.0".to_string(), 1, 42);
         resp.max_frame_size = Some(67_108_864);
         resp.max_key_size = Some(1024);
         resp.max_value_size = Some(33_554_432);
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn test_hello_frames_encode_decode() {
         // Full Frame with Hello Opcode
-        let req = HelloRequest::new(1, "cachedb-cli".to_string(), None);
+        let req = HelloRequest::new(1, "skiff-cli".to_string(), None);
         let req_frame = Frame::new(Header::new(0x00, 1, Opcode::Hello, 0), req.to_value());
 
         let mut buf = Vec::new();
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(parsed_req, req);
 
         // Response Frame
-        let resp = HelloResponse::new("cachedbd".to_string(), "0.1.0".to_string(), 1, 100);
+        let resp = HelloResponse::new("skiffd".to_string(), "0.1.0".to_string(), 1, 100);
         let resp_frame = Frame::new(
             Header::new(FLAG_RESPONSE, 1, Opcode::Hello, 0),
             resp.to_value(),
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn test_hello_exact_bytes_full_frame() {
         // 1. HelloRequest exact byte representation
-        let req = HelloRequest::new(1, "cachedb-cli".to_string(), None);
+        let req = HelloRequest::new(1, "skiff-cli".to_string(), None);
         let req_frame = Frame::new(Header::new(0x00, 1, Opcode::Hello, 0), req.to_value());
         let mut req_buf = Vec::new();
         encode_frame(&req_frame, &mut req_buf).expect("encode req frame");
@@ -353,13 +353,13 @@ mod tests {
             0x00, // Flags (Request)
             0x00, 0x00, 0x00, 0x01, // Request ID 1
             0x00, 0x01, // Opcode: Hello (0x0001)
-            0x00, 0x00, 0x00, 0x12, // Payload length: 18 bytes
-            // Payload (Array of 3 elements: Int(1), Text("cachedb-cli"), Nil)
+            0x00, 0x00, 0x00, 0x10, // Payload length: 16 bytes
+            // Payload (Array of 3 elements: Int(1), Text("skiff-cli"), Nil)
             0x06, // Tag: Array
             0x03, // Count: 3
             0x01, 0x02, // Int(1) -> zigzag(1) = 2
-            0x04, 0x0B, b'c', b'a', b'c', b'h', b'e', b'd', b'b', b'-', b'c', b'l',
-            b'i', // Text("cachedb-cli")
+            0x04, 0x09, b's', b'k', b'i', b'f', b'f', b'-', b'c', b'l',
+            b'i', // Text("skiff-cli")
             0x00, // Nil
         ];
         assert_eq!(&req_buf[..], expected_req_bytes);
@@ -377,7 +377,7 @@ mod tests {
         );
 
         // 2. HelloResponse exact byte representation
-        let resp = HelloResponse::new("cachedbd".to_string(), "0.1.0".to_string(), 1, 42);
+        let resp = HelloResponse::new("skiffd".to_string(), "0.1.0".to_string(), 1, 42);
         let resp_frame = Frame::new(
             Header::new(FLAG_RESPONSE, 1, Opcode::Hello, 0),
             resp.to_value(),
@@ -391,13 +391,13 @@ mod tests {
             0x01, // Flags (FLAG_RESPONSE)
             0x00, 0x00, 0x00, 0x01, // Request ID 1
             0x00, 0x01, // Opcode: Hello (0x0001)
-            0x00, 0x00, 0x00, 0x51, // Payload length: 81 bytes
+            0x00, 0x00, 0x00, 0x4F, // Payload length: 79 bytes
             // Payload (Map of 4 entries)
             0x07, // Tag: Map
             0x04, // Count: 4
-            // Entry 1: "server_name" -> "cachedbd"
+            // Entry 1: "server_name" -> "skiffd"
             0x04, 0x0B, b's', b'e', b'r', b'v', b'e', b'r', b'_', b'n', b'a', b'm', b'e', 0x04,
-            0x08, b'c', b'a', b'c', b'h', b'e', b'd', b'b', b'd',
+            0x06, b's', b'k', b'i', b'f', b'f', b'd',
             // Entry 2: "server_version" -> "0.1.0"
             0x04, 0x0E, b's', b'e', b'r', b'v', b'e', b'r', b'_', b'v', b'e', b'r', b's', b'i',
             b'o', b'n', 0x04, 0x05, b'0', b'.', b'1', b'.', b'0',

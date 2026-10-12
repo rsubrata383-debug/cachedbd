@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn test_same_input_same_seed_and_different_seed() {
-        let input = b"cachedb-key-test";
+        let input = b"skiffdb-key-test";
         let h1 = hash64(input, 12345);
         let h2 = hash64(input, 12345);
         assert_eq!(h1, h2, "same input and same seed must yield same hash");

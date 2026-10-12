@@ -6,7 +6,7 @@ rust-version = "1.85"
 description = "A fast, in-memory key-value database"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/rsubrata383-debug/cachedbd"
+repository = "https://github.com/skiffdb/skiffdb"
 
 [[bin]]
 name = "skiffd"

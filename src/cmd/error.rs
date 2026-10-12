@@ -60,6 +60,8 @@ pub const ERR_MALFORMED_VARINT: CmdError = CmdError::new(1005, "malformed varint
 pub const ERR_MALFORMED_PAYLOAD: CmdError = CmdError::new(1006, "payload decoding failed", true);
 /// 1007: Payload contains unrecognized type tag byte without length prefix.
 pub const ERR_UNKNOWN_TYPE_TAG: CmdError = CmdError::new(1007, "unknown type tag", true);
+/// 1008: Header specifies an unrecognized frame opcode.
+pub const ERR_UNKNOWN_OPCODE: CmdError = CmdError::new(1008, "unknown frame opcode", true);
 
 // 2000–2999: Command Syntax and Argument Errors
 /// 2001: Command verb does not exist.
@@ -130,6 +132,7 @@ mod tests {
             ("ERR_MALFORMED_VARINT", ERR_MALFORMED_VARINT),
             ("ERR_MALFORMED_PAYLOAD", ERR_MALFORMED_PAYLOAD),
             ("ERR_UNKNOWN_TYPE_TAG", ERR_UNKNOWN_TYPE_TAG),
+            ("ERR_UNKNOWN_OPCODE", ERR_UNKNOWN_OPCODE),
             ("ERR_UNKNOWN_COMMAND", ERR_UNKNOWN_COMMAND),
             ("ERR_WRONG_ARG_COUNT", ERR_WRONG_ARG_COUNT),
             ("ERR_INVALID_ARGUMENT", ERR_INVALID_ARGUMENT),

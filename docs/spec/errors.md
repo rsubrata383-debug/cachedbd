@@ -1,6 +1,6 @@
-# Cachedb Error Code Catalog (v0.1)
+# SkiffDB Error Code Catalog (v0.1)
 
-This document catalogs all numeric error codes, error names, human-readable messages, trigger conditions, and connection behavior in Cachedb.
+This document catalogs all numeric error codes, error names, human-readable messages, trigger conditions, and connection behavior in SkiffDB.
 
 > **Version:** 0.1 (Frozen)  
 > **Status:** Frozen on 2026-10-10 (Phase 0 Week 2)  
@@ -16,9 +16,10 @@ Error codes are organized into semantic 1000s ranges with generous gaps. This al
 
 ## 2. Codes Previously Established in `protocol.md`
 
-The following codes were established in [docs/spec/protocol.md](file:///c:/Users/Subrata/Desktop/rust/cachedb/docs/spec/protocol.md) and are preserved with their exact numbers, names, and messages in the catalog below:
+The following codes were established in [`protocol.md`](protocol.md) and are preserved with their exact numbers, names, and messages in the catalog below:
 - `1001`: `ERR_UNSUPPORTED_PROTOCOL_VERSION` (Protocol version mismatch)
 - `1002`: `ERR_UNSUPPORTED_FLAG` (Reserved flag bit received)
+- `1008`: `ERR_UNKNOWN_OPCODE` (Unrecognized frame opcode received)
 - `2001`: `ERR_UNKNOWN_COMMAND` (Unregistered command name)
 
 ---
@@ -37,7 +38,8 @@ The following codes were established in [docs/spec/protocol.md](file:///c:/Users
 | **1005** | `ERR_MALFORMED_VARINT` | `"malformed varint encoding"` | Varint continuation exceeds 10 bytes (64 bits) or stream terminates early | **Yes** |
 | **1006** | `ERR_MALFORMED_PAYLOAD` | `"payload decoding failed"` | Payload byte stream ends before declared item length | **Yes** |
 | **1007** | `ERR_UNKNOWN_TYPE_TAG` | `"unknown type tag"` | Payload contains unrecognized type tag byte without length prefix | **Yes** |
-| *1008–1099* | *(Reserved for future framing errors)* | — | — | — |
+| **1008** | `ERR_UNKNOWN_OPCODE` | `"unknown frame opcode"` | Header specifies an unrecognized frame opcode | **Yes** |
+| *1009–1099* | *(Reserved for future framing errors)* | — | — | — |
 
 ---
 
@@ -46,7 +48,7 @@ The following codes were established in [docs/spec/protocol.md](file:///c:/Users
 
 | Code | Error Name | Message | When it Happens | Closed? |
 |:---:|---|---|---|:---:|
-| **2001** | `ERR_UNKNOWN_COMMAND` | `"unknown command"` | Command verb does not exist (or unhandled frame opcode received; for unhandled frame opcode, the connection is closed) | **No** |
+| **2001** | `ERR_UNKNOWN_COMMAND` | `"unknown command"` | Command verb does not exist | **No** |
 | **2002** | `ERR_WRONG_ARG_COUNT` | `"wrong number of arguments for command"` | Command receives fewer or more arguments than required | **No** |
 | **2003** | `ERR_INVALID_ARGUMENT` | `"invalid argument syntax"` | Argument cannot be parsed into expected target type (e.g. invalid integer) | **No** |
 | **2004** | `ERR_KEY_TOO_LARGE` | `"key exceeds maximum size"` | Key length exceeds `max_key_size` (default 1 KB, configurable) | **No** |
@@ -118,4 +120,3 @@ The following codes were established in [docs/spec/protocol.md](file:///c:/Users
 | **7003** | `ERR_LOADING_DATASET` | `"server is loading dataset in background"` | Command sent while server is replaying journal on startup | **No** |
 | **7004** | `ERR_SERVER_SHUTTING_DOWN` | `"server is shutting down"` | Command received during server shutdown sequence | **Yes** |
 | *7005–7099* | *(Reserved for future server errors)* | — | — | — |
-

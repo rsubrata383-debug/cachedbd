@@ -13,7 +13,6 @@ use common::XorShift64;
 /// Returns the number of seeds to execute per property test.
 fn num_seeds() -> usize {
     std::env::var("SKIFFDB_PROP_SEEDS")
-        .or_else(|_| std::env::var("CACHEDB_PROP_SEEDS"))
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(24)

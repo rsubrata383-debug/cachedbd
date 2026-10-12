@@ -34,7 +34,7 @@ fn test_blocking_echo_server_round_trip() -> Result<(), Box<dyn std::error::Erro
     client.set_write_timeout(Some(std::time::Duration::from_secs(3)))?;
 
     // Send payload 1.
-    let message_1 = b"hello, cachedb blocking echo server!";
+    let message_1 = b"hello, skiffdb blocking echo server!";
     client.write_all(message_1)?;
     let mut response_1 = vec![0u8; message_1.len()];
     client.read_exact(&mut response_1)?;

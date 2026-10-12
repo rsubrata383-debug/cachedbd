@@ -1,6 +1,6 @@
-# Cachedb Wire Protocol Specification (v0.1)
+# SkiffDB Wire Protocol Specification (v0.1)
 
-This document defines the binary wire protocol used for communication between Cachedb clients and the `cachedbd` server.
+This document defines the binary wire protocol used for communication between SkiffDB clients and the `skiffd` server.
 
 > **Version:** 0.1 (Frozen)  
 > **Status:** Frozen on 2026-10-10 (Phase 0 Week 2)  
@@ -10,7 +10,7 @@ This document defines the binary wire protocol used for communication between Ca
 
 ## 1. Protocol Overview
 
-The Cachedb wire protocol is a framed, pure-binary protocol designed for high throughput, low latency, and efficient pipelining.
+The SkiffDB wire protocol is a framed, pure-binary protocol designed for high throughput, low latency, and efficient pipelining.
 
 Key design attributes:
 - **Encoding**: Pure binary. Payloads use typed binary items without text parsing overhead.
@@ -49,7 +49,7 @@ Every frame begins with a fixed 14-byte header:
 | `version` | 1 byte | u8 | — | Protocol version. Initial version is `1` (`0x01`). |
 | `flags` | 1 byte | Bitfield | — | Message control flags (see Flags section). |
 | `request_id` | 4 bytes | u32 | Big-Endian | Identifier chosen by client to pair responses. Must be `0` for push frames. |
-| `opcode` | 2 bytes | u16 | Big-Endian | Operation identifier (`0x0001` = HELLO, `0x0002` = COMMAND, `0x0003` = PUSH). Unrecognized opcodes return `2001 ERR_UNKNOWN_COMMAND` and close the TCP connection. |
+| `opcode` | 2 bytes | u16 | Big-Endian | Operation identifier (`0x0001` = HELLO, `0x0002` = COMMAND, `0x0003` = PUSH). Unrecognized opcodes return `1008 ERR_UNKNOWN_OPCODE` and close the TCP connection. |
 | `payload_len`| 4 bytes | u32 | Big-Endian | Byte size of the payload following this header. |
 
 ---
@@ -108,7 +108,7 @@ Upon opening a TCP connection, clients should perform a `HELLO` exchange:
    - `opcode = 0x0001` (HELLO), `flags = 0x00` (Request).
    - Payload: Array of 3 items:
      - Protocol version (`Int`: `1`)
-     - Client name (`Text`: e.g. `"cachedb-cli 0.1.0"`)
+     - Client name (`Text`: e.g. `"skiff-cli 0.1.0"`)
      - Auth token / credentials (`Text` or `Nil`)
 2. **Server Response**:
    - `opcode = 0x0001`, `flags = 0x01` (FLAG_RESPONSE).
@@ -156,12 +156,12 @@ To prevent denial-of-service and buffer exhaustion:
 
 | Limit | Default Value | Configurable | Behavior on Breach |
 |---|---|---|---|
-| **Max Frame Size** | 64 MB (67,108,864 bytes) | Yes (`max_frame_size` in `cachedb.toml`) | Connection closed immediately |
+| **Max Frame Size** | 64 MB (67,108,864 bytes) | Yes (`max_frame_size` in `skiff.toml`) | Connection closed immediately |
 | **Max Argument Count** | 65,536 items | Yes (`max_arguments`) | Error reply returned |
-| **Max Key Size** | 1 KB (1,024 bytes default) | Yes (`max_key_size` in `cachedb.toml`) | Error reply returned |
+| **Max Key Size** | 1 KB (1,024 bytes default) | Yes (`max_key_size` in `skiff.toml`) | Error reply returned |
 | **Max Value Size** | 32 MB (default) | Yes (`max_value_size`) | Error reply returned |
 
-> **Note on Large Values**: In v0.1, large values up to 100 MB (tested in Phase 2 Week 15 benchmarks) are supported by raising `max_frame_size = 134217728` (128 MB) in `cachedb.toml`. Multi-frame chunking remains reserved.
+> **Note on Large Values**: In v0.1, large values up to 100 MB (tested in Phase 2 Week 15 benchmarks) are supported by raising `max_frame_size = 134217728` (128 MB) in `skiff.toml`. Multi-frame chunking remains reserved.
 
 ---
 
@@ -374,4 +374,3 @@ EA 07             -- Error Code: 1002 (2 bytes, LEB128 varint)
 74 65 64 20 66 6C 61 67 -- UTF-8: "ted flag" (8 bytes)
 -- Payload total: 1 + 2 + 1 + 16 = 20 bytes
 ```
-

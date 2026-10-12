@@ -15,7 +15,7 @@
 2026-10-12T02:29:29.2748716Z [1m[92m Downloading[0m crates ...
 2026-10-12T02:29:29.3064732Z [1m[92m  Downloaded[0m libc v0.2.190
 2026-10-12T02:29:29.3738778Z [1m[92m   Compiling[0m libc v0.2.190
-2026-10-12T02:29:36.4172281Z [1m[92m   Compiling[0m skiffdb v0.1.0 (/home/runner/work/cachedbd/cachedbd)
+2026-10-12T02:29:36.4172281Z [1m[92m   Compiling[0m skiffdb v0.1.0 (/home/runner/work/skiffdb/skiffdb)
 2026-10-12T02:29:38.5075983Z [1m[92m    Finished[0m `bench` profile [optimized] target(s) in 10.11s
 2026-10-12T02:29:38.5175116Z [1m[92m     Running[0m benches/store_bench.rs (target/release/deps/store_bench-95c867ac0709ae83)
 2026-10-12T02:29:38.5187501Z # skiffdb Store Benchmark: RobinHoodTable vs std::collections::HashMap

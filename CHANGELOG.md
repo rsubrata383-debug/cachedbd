@@ -1,11 +1,11 @@
 # Changelog
 
-All notable changes to `SkiffDB` (formerly codenamed `cachedb`) will be documented in this file.
+All notable changes to `SkiffDB` will be documented in this file.
 
 ## v0.1.0 - 2026-10-12
 
 ### Added
-- **Wire Protocol**: Custom binary framing with 14-byte headers (`magic: 0x43444231`, `request_id`, `opcode`, `payload_len`), streaming frame decoder, LEB128 varint encoding, AST value model (`Nil`, `Bool`, `Int`, `Float`, `Text`, `Bytes`, `Array`, `Map`, `Error`), and handshake negotiation via `HELLO` frames.
+- **Wire Protocol**: Custom binary framing with 14-byte headers (`magic: 0xCA 0xDB`, `request_id`, `opcode`, `payload_len`), streaming frame decoder, LEB128 varint encoding, AST value model (`Nil`, `Bool`, `Int`, `Float`, `Text`, `Bytes`, `Array`, `Map`, `Error`), and handshake negotiation via `HELLO` frames.
 - **Storage Engine**: In-memory Robin Hood hash table with backward-shift deletion, linear probing with PSL (probe sequence length) tracking, and incremental resize migration spreading rehash work across subsequent operations.
 - **Command Engine**: Layer supporting commands:
   - `ping [msg]`: Heartbeat and connection testing.
@@ -44,4 +44,4 @@ All notable changes to `SkiffDB` (formerly codenamed `cachedb`) will be document
 - **Single-Threaded Server**: Event loop and storage core run on a single thread; cannot utilize multiple CPU cores for request execution.
 - **Linear Command Lookup**: Dispatch engine uses linear scan over registered commands.
 - **Value Cloning on Fetch**: `fetch` clones values from storage during reply frame construction.
-- **Project Identity**: Named SkiffDB (`skiffdb`, daemon `skiffd`, CLI `skiff-cli`, bench `skiff-bench`), with protocol wire magic `CDB1` preserved for v0.1 compatibility.
+- **Project Identity**: Named SkiffDB (`skiffdb`, daemon `skiffd`, CLI `skiff-cli`, bench `skiff-bench`), with protocol wire magic `0xCA 0xDB`.

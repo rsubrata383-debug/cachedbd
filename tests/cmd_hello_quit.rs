@@ -21,7 +21,7 @@ fn test_hello_spec_example() {
     let req = Value::Array(vec![
         Value::Text("hello".to_string()),
         Value::Int(1),
-        Value::Text("cachedb-cli 0.1.0".to_string()),
+        Value::Text("skiff-cli 0.1.0".to_string()),
     ]);
 
     let outcome = engine.execute(&mut session, &req);

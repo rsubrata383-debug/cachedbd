@@ -1,4 +1,4 @@
-//! Real end-to-end TCP integration tests for the Cachedb server and event loop.
+//! Real end-to-end TCP integration tests for the SkiffDB server and event loop.
 //!
 //! Evaluates network I/O, pipelining, concurrency, framing errors, and migration
 //! over real Linux loopback TCP sockets.

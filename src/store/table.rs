@@ -590,6 +590,11 @@ impl<V> RobinHoodTable<V> {
             }
 
             if self.migrate_cursor >= old.capacity {
+                debug_assert!(
+                    false,
+                    "migrate_cursor reached end of old_table with {} items remaining",
+                    old.len
+                );
                 self.migrate_cursor = 0;
             }
 
@@ -621,6 +626,10 @@ impl<V> RobinHoodTable<V> {
                     Err(returned_slot) => {
                         // Put the item back into old_table so no key is ever lost!
                         let restore_res = old.insert_slot(returned_slot);
+                        debug_assert!(
+                            restore_res.is_ok(),
+                            "restoring slot into old_table must succeed because slot was just removed"
+                        );
                         if let Err(unrestored) = restore_res {
                             for s in &mut old.slots {
                                 if s.is_none() {
@@ -643,6 +652,11 @@ impl<V> RobinHoodTable<V> {
                 return Ok(false);
             }
             if self.migrate_cursor >= old.capacity {
+                debug_assert!(
+                    false,
+                    "migrate_cursor reached end of old_table with {} items remaining",
+                    old.len
+                );
                 self.migrate_cursor = 0;
             }
         }
@@ -776,6 +790,10 @@ impl<V> RobinHoodTable<V> {
             Err(returned_slot) => {
                 let old = self.old_table.as_mut()?;
                 let restore_res = old.insert_slot(returned_slot);
+                debug_assert!(
+                    restore_res.is_ok(),
+                    "restoring slot into old_table must succeed because slot was just removed"
+                );
                 if let Err(unrestored) = restore_res {
                     for s in &mut old.slots {
                         if s.is_none() {
@@ -855,6 +873,10 @@ impl<V> RobinHoodTable<V> {
                 if let Some(slot) = old_slot {
                     if let Some(ref mut old) = self.old_table {
                         let restore_res = old.insert_slot(slot);
+                        debug_assert!(
+                            restore_res.is_ok(),
+                            "restoring slot into old_table must succeed because slot was just removed"
+                        );
                         if let Err(unrestored) = restore_res {
                             for s in &mut old.slots {
                                 if s.is_none() {

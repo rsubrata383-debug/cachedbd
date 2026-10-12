@@ -378,7 +378,7 @@ impl Server {
 
     fn send_salvaged_proto_error(conn: &mut Connection<TcpStream>, code: u16, message: &str) {
         match code {
-            1001 | 1002 | 1005 | 1006 | 1007 | 2001 => {
+            1001 | 1002 | 1005 | 1006 | 1007 | 1008 => {
                 let header = Header::new(FLAG_RESPONSE | FLAG_ERROR, 0, Opcode::Command, 0);
                 let reply_val = Value::Error {
                     code,

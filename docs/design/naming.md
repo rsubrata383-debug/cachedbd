@@ -7,7 +7,6 @@ This document records the finalized naming conventions, file formats, networking
 ## 1. Project Name
 
 - **Name**: `skiffdb` (display name: **SkiffDB**)
-- **Working Codename**: formerly `cachedb` during initial Phase 1 development.
 
 ---
 
@@ -37,7 +36,7 @@ This document records the finalized naming conventions, file formats, networking
 ## 4. Networking
 
 - **Default Port**: `7878` (configured as standard default in `skiffd` and `skiff-cli`).
-- **Wire Protocol Magic**: `0x43444231` (`CDB1`) preserved for v0.1 wire specification backward compatibility.
+- **Wire Protocol Magic**: `0xCA 0xDB` (`0xCADB`).
 
 ---
 
