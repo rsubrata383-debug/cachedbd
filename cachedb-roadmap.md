@@ -180,8 +180,8 @@ cachedb/
 ### Week 8: Client and tooling
 
 - [x] Build `cachedb-cli`, an interactive client with history, pipelined script mode, and pretty printing.
-- [] Build a small client library (one language) with connection pooling and pipelining.
-- [] Build a basic load generator (`cachedb-bench`) with configurable key size, value size, read/write ratio, and connection count.
+- [ ] Build a small client library (one language) with connection pooling and pipelining.
+- [ ] Build a basic load generator (`cachedb-bench`) with configurable key size, value size, read/write ratio, and connection count.
 - [ ] Write the first benchmark report and commit it.
 - [ ] Tag `v0.1`.
 

@@ -46,15 +46,15 @@ Target workloads include:
 
 Progress is tracked through the milestone checklist in [`cachedb-roadmap.md`](cachedb-roadmap.md) and detailed design decisions in [`docs/journal.md`](docs/journal.md).
 
-| Phase       | Milestone                          |    Status     | Key Deliverables                                                                             |
-| :---------- | :--------------------------------- | :-----------: | :------------------------------------------------------------------------------------------- |
-| **Phase 0** | **Decisions & Design**             | **Completed** | Vision, threading model, and frozen `v0.1` specifications.                                   |
-| **Phase 1** | **Week 3: Networking Basics**      | **Completed** | Linux `epoll` syscall wrapper, `EventLoop`, non-blocking echo server.                        |
-| **Phase 1** | **Week 4: Buffers & Connections**  | **Completed** | `ConnectionTable`, flow-control backpressure, 10,000 idle connection scale test.             |
-| **Phase 1** | **Week 5: Wire Protocol**          | **Completed** | Binary frame encode/decode, streaming chunk parser, HELLO negotiation, limits, fuzz testing. |
-| **Phase 1** | **Week 6: Hash Table**             | **Completed** | Custom Robin Hood hash table with incremental background resizing.                           |
-| **Phase 1** | **Week 7: Core Commands**          | **Completed** | `ping`, `put`, `fetch`, `drop`, `has`, `size`, `bump`.                                       |
-| **Phase 1** | **Week 8: Tooling & v0.1 Release** |  **In Prograce**   | CLI shell (`cachedb-cli`), bench tool (`cachedb-bench`), v0.1 release tag.                   |
+| Phase       | Milestone                          |     Status      | Key Deliverables                                                                             |
+| :---------- | :--------------------------------- | :-------------: | :------------------------------------------------------------------------------------------- |
+| **Phase 0** | **Decisions & Design**             |  **Completed**  | Vision, threading model, and frozen `v0.1` specifications.                                   |
+| **Phase 1** | **Week 3: Networking Basics**      |  **Completed**  | Linux `epoll` syscall wrapper, `EventLoop`, non-blocking echo server.                        |
+| **Phase 1** | **Week 4: Buffers & Connections**  |  **Completed**  | `ConnectionTable`, flow-control backpressure, 10,000 idle connection scale test.             |
+| **Phase 1** | **Week 5: Wire Protocol**          |  **Completed**  | Binary frame encode/decode, streaming chunk parser, HELLO negotiation, limits, fuzz testing. |
+| **Phase 1** | **Week 6: Hash Table**             |  **Completed**  | Custom Robin Hood hash table with incremental background resizing.                           |
+| **Phase 1** | **Week 7: Core Commands**          |  **Completed**  | `ping`, `put`, `fetch`, `drop`, `has`, `size`, `bump`.                                       |
+| **Phase 1** | **Week 8: Tooling & v0.1 Release** | **In Progrece** | CLI shell (`cachedb-cli`), bench tool (`cachedb-bench`), v0.1 release tag.                   |
 
 ---
 

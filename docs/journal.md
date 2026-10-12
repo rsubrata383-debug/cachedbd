@@ -1660,3 +1660,26 @@ Week 8 Step 3c: tests used a wrong HELLO payload; server was right; fixed helper
 2. **Robust Test Helpers**: Implemented `raw_handshake`, `read_one_frame`, and `expect_ok_reply` in `tests/common/mod.rs` to validate all reply headers, flags (`FLAG_RESPONSE`, not `FLAG_ERROR`), and opcodes across test suites.
 3. **Pipelining & Accumulation**: Preserved unconsumed bytes in a shared accumulator across both handshake and command reply drains, eliminating race conditions and lost frames.
 4. **Regression Testing**: Added `test_malformed_hello_payload_rejected_with_1006_and_closed` ensuring invalid HELLO payloads elicit code 1006 followed by clean server-initiated closure, leaving the server responsive for subsequent clients.
+
+---
+
+## 2026-10-12: Week 8 Step 4 — Benchmark Load Generator (`cachedb-bench`)
+
+- **Scope**: Multi-threaded load generator implementation (`src/bench.rs` and `src/bin/cachedb-bench.rs`), workload distributions, fixed-size latency histogram, Linux E2E test, and CI workflow.
+
+### Architecture Decisions & Trade-Offs
+
+1. **Decision: Per-Batch Latency Measurement**:
+   - Pipelined protocol execution sends multiple commands in a batch and reads all replies together to amortize system call overhead and TCP packet framing.
+   - Recording latency per batch (`Instant::now()` before write to after reading full batch replies) reflects real-world pipelined client round-trip times. Per-command latency within a single pipeline batch cannot be measured non-intrusively from the client perspective without serializing round-trips.
+   - Both the CLI output and documentation explicitly label latency metrics as batch round-trip latency.
+
+2. **Decision: Distinct Counter Key Space for Mixed Workload**:
+   - In `mixed` workloads (50% fetch, 40% put, 5% bump, 5% drop), `put` commands write `Value::Bytes` or `Value::Text` payloads.
+   - If a subsequent `bump` command targeted the same key holding string/byte data, the server handler would return error 3004 (`ERR_NOT_AN_INTEGER`).
+   - Rather than masking or ignoring 3004 errors, we isolate counters into `"cnt:<idx>"` while general key-value operations use `"key:<idx>"`. This guarantees zero protocol errors during continuous execution while maintaining realistic multi-operation distributions.
+
+3. **Decision: GitHub Actions Benchmark via `workflow_dispatch` Only**:
+   - The multi-workload benchmark suite takes >60 seconds of sustained CPU execution per run across 5 workloads.
+   - Running full multi-connection benchmarks on every push or PR would create severe CI queue delays and waste runner minutes.
+   - Triggering via manual `workflow_dispatch` enables on-demand profiling and performance regression testing while keeping standard PR CI fast and responsive.

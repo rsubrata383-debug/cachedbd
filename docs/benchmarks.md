@@ -315,3 +315,74 @@ Measured on Windows 11 x86_64 (`cargo bench --bench store_bench -- --keys 100000
 | resize started | 6 |
 | migration finished, old table dropped | 3 |
 | unchanged | 0 |
+
+---
+
+## Network Load Generator Benchmarks (`cachedb-bench`)
+
+The `cachedb-bench` tool generates synthetic multi-connection client workloads over standard TCP sockets using the native client protocol implementation.
+
+### Running Benchmarks Locally (Script-Free)
+
+To run the benchmark suite manually without external scripts:
+
+1. **Build Release Binaries**:
+   ```bash
+   cargo build --release --bin cachedbd --bin cachedb-bench
+   ```
+
+2. **Start the Database Daemon**:
+   In a separate terminal (or in the background):
+   ```bash
+   ./target/release/cachedbd --bind 127.0.0.1 --port 7878
+   ```
+
+3. **Run Workloads with `cachedb-bench`**:
+
+   - **Read-Heavy Workload (95% Fetch, 5% Put, Pipeline 16)**:
+     ```bash
+     ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload read --connections 4 --duration 10 --warmup 2 --pipeline 16 --preload
+     ```
+
+   - **Read-Heavy Workload (Unpipelined, Pipeline 1)**:
+     ```bash
+     ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload read --connections 4 --duration 10 --warmup 2 --pipeline 1
+     ```
+
+   - **Write-Only Workload (100% Put, Pipeline 16)**:
+     ```bash
+     ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload write --connections 4 --duration 10 --warmup 2 --pipeline 16
+     ```
+
+   - **Mixed Workload (50% Fetch, 40% Put, 5% Bump, 5% Drop, Pipeline 16)**:
+     ```bash
+     ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload mixed --connections 4 --duration 10 --warmup 2 --pipeline 16 --preload
+     ```
+
+   - **Counter Workload (100% Bump, Pipeline 16)**:
+     ```bash
+     ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload bump --connections 4 --duration 10 --warmup 2 --pipeline 16
+     ```
+
+### Honest Limits
+
+When evaluating network benchmark results, consider the following environmental and structural constraints:
+
+1. **Co-located Client and Server**: Benchmarks execute client threads and the database daemon on the same physical or virtual host. Loopback TCP avoids physical network interface and switch latency, but client and server compete for shared CPU cores and cache hierarchy.
+2. **Shared CI Runner Noise**: GitHub Actions runners run on shared virtualized cloud hardware (`ubuntu-latest`). Noisy neighbor effects, CPU throttling, and scheduling jitter can affect percentile distributions between separate runs.
+3. **Per-Batch Latency Measurement**: Pipelined batches send multiple commands in a single frame sequence. The recorded latency represents the round-trip duration for the entire batch (e.g. 16 commands), not individual command execution times inside the server engine.
+4. **Single-Threaded Event Loop Core**: The database server core processes all commands on a single non-blocking event loop thread. Increasing client connection counts beyond CPU saturation tests queueing behavior rather than parallel execution.
+5. **Small Synthetic Values**: Standard benchmarks utilize 64-byte payloads. Workloads with multi-megabyte payloads will be bottlenecked by memory copying and TCP socket buffer watermarks rather than command dispatch throughput.
+6. **In-Memory Operation (No Persistence)**: Measurements reflect pure in-memory execution without WAL disk writes or background snapshot creation enabled.
+
+### Network Benchmark Results (GitHub Actions CI)
+
+The table below reflects automated measurements gathered via `.github/workflows/bench.yml`:
+
+| Workload | Pipeline | Connections | Throughput (ops/sec) | Batch Latency p50 | Batch Latency p99 | Batch Latency p99.9 | Batch Latency max |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Read (95/5) | 16 | 4 | *to be filled from the CI artifact* | *to be filled* | *to be filled* | *to be filled* | *to be filled* |
+| Read (95/5) | 1 | 4 | *to be filled from the CI artifact* | *to be filled* | *to be filled* | *to be filled* | *to be filled* |
+| Write (100% put) | 16 | 4 | *to be filled from the CI artifact* | *to be filled* | *to be filled* | *to be filled* | *to be filled* |
+| Mixed | 16 | 4 | *to be filled from the CI artifact* | *to be filled* | *to be filled* | *to be filled* | *to be filled* |
+| Bump (100% bump) | 16 | 4 | *to be filled from the CI artifact* | *to be filled* | *to be filled* | *to be filled* | *to be filled* |
