@@ -1,10 +1,10 @@
 //! Integration tests for the `bump` command.
 
-use cachedb::cmd::{
+use skiffdb::cmd::{
     ERR_EMPTY_KEY, ERR_INTEGER_OVERFLOW, ERR_INVALID_ARGUMENT, ERR_KEY_TOO_LARGE,
     ERR_NOT_AN_INTEGER, ERR_WRONG_ARG_COUNT, ERR_WRONG_TYPE, Engine, Session,
 };
-use cachedb::proto::Value;
+use skiffdb::proto::Value;
 
 #[test]
 fn test_bump_spec_examples() {

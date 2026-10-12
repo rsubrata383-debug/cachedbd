@@ -1,13 +1,13 @@
-# cachedb
+# SkiffDB
 
 > **Status: Active Development (v0.1.0)**  
-> _cachedb is currently under heavy development and is not yet production-ready. APIs, internal layouts, and wire structures are evolving according to the project roadmap._
+> _SkiffDB (formerly working codename cachedb) is currently under heavy development and is not yet production-ready. APIs, internal layouts, and wire structures are evolving according to the project roadmap._
 
 v0.1.0 is an early learning release, not production ready. See [docs/benchmarks.md](docs/benchmarks.md) for initial benchmark numbers and the [CHANGELOG](CHANGELOG.md) for release details. Linux is needed for the server (epoll); the client and CLI also build on Windows.
 
 ---
 
-`cachedb` is a high-performance, single-threaded, event-driven, in-memory key-value data store built from the ground up in Rust. Designed for predictable sub-millisecond latencies and high concurrency, it features its own custom binary wire protocol, command dispatch engine, streaming I/O buffers, and write-ahead persistence layer.
+`SkiffDB` is a high-performance, single-threaded, event-driven, in-memory key-value data store built from the ground up in Rust. Designed for predictable sub-millisecond latencies and high concurrency, it features its own custom binary wire protocol, command dispatch engine, streaming I/O buffers, and write-ahead persistence layer.
 
 Target workloads include:
 
@@ -19,11 +19,11 @@ Target workloads include:
 
 ## Architecture Overview
 
-`cachedb` operates on a **single-threaded, event-driven core** model: network polling, frame parsing, command execution, and memory storage execute sequentially on one main thread without locks, mutexes, or reference counting overhead. Heavy operations (disk fsync, background compaction, snapshotting) are offloaded to dedicated background threads.
+`SkiffDB` operates on a **single-threaded, event-driven core** model: network polling, frame parsing, command execution, and memory storage execute sequentially on one main thread without locks, mutexes, or reference counting overhead. Heavy operations (disk fsync, background compaction, snapshotting) are offloaded to dedicated background threads.
 
 ```
                       +---------------------------------------+
-                      |       Client (cachedb-cli / SDK)      |
+                      |       Client (skiff-cli / SDK)        |
                       +---------------------------------------+
                                           |
                                (Custom Wire Protocol)
@@ -84,10 +84,10 @@ cachedb/
 │       └── errors.md           # Structured error catalog
 ├── src/
 │   ├── lib.rs                  # Core library entry point
-│   ├── main.rs                 # Server daemon binary (cachedbd)
+│   ├── main.rs                 # Server daemon binary (skiffd)
 │   ├── bin/
-│   │   ├── cachedb-cli.rs      # Interactive terminal client
-│   │   └── cachedb-bench.rs    # Benchmarking and load generation harness
+│   │   ├── skiff-cli.rs        # Interactive terminal client
+│   │   └── skiff-bench.rs      # Benchmarking and load generation harness
 │   ├── net/                    # Networking and event loop abstractions
 │   │   ├── buffer.rs           # ReadBuffer, WriteQueue, RingBuffer
 │   │   ├── connection.rs       # Connection and ConnectionTable registry
@@ -127,10 +127,10 @@ cachedb/
 
 ## Binaries & Default Settings
 
-- **Server Daemon**: `cachedbd`
-- **Interactive Shell Client**: `cachedb-cli`
-- **Load Generator & Benchmark**: `cachedb-bench`
-- **Default Port**: `7379`
+- **Server Daemon**: `skiffd`
+- **Interactive Shell Client**: `skiff-cli`
+- **Load Generator & Benchmark**: `skiff-bench`
+- **Default Port**: `7878`
 - **Primary OS Target**: Linux (kernel `epoll`). Use WSL2 on Windows.
 
 ---
@@ -148,41 +148,41 @@ cargo build --release
 Start the server daemon (requires Linux / WSL2 for epoll):
 
 ```bash
-./target/release/cachedbd --bind 127.0.0.1 --port 7878
+./target/release/skiffd --bind 127.0.0.1 --port 7878
 ```
 
-### 3. Use the CLI (`cachedb-cli`)
+### 3. Use the CLI (`skiff-cli`)
 
 One-shot commands:
 
 ```bash
-./target/release/cachedb-cli put mykey "hello world"
-./target/release/cachedb-cli fetch mykey
-./target/release/cachedb-cli bump counter 1
+./target/release/skiff-cli put mykey "hello world"
+./target/release/skiff-cli fetch mykey
+./target/release/skiff-cli bump counter 1
 ```
 
 Interactive REPL mode:
 
 ```bash
-./target/release/cachedb-cli --host 127.0.0.1 --port 7878
+./target/release/skiff-cli --host 127.0.0.1 --port 7878
 ```
 
 ```text
-cachedb> put mykey "hello world"
+skiff> put mykey "hello world"
 "hello world"
-cachedb> fetch mykey
+skiff> fetch mykey
 "hello world"
-cachedb> bump counter 1
+skiff> bump counter 1
 (integer) 1
-cachedb> quit
+skiff> quit
 ```
 
-### 4. Run the Load Generator (`cachedb-bench`)
+### 4. Run the Load Generator (`skiff-bench`)
 
-Run synthetic client workloads using `cachedb-bench`:
+Run synthetic client workloads using `skiff-bench`:
 
 ```bash
-./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload read --connections 4 --duration 10 --warmup 2 --pipeline 16 --preload
+./target/release/skiff-bench --addr 127.0.0.1:7878 --workload read --connections 4 --duration 10 --warmup 2 --pipeline 16 --preload
 ```
 
 ---

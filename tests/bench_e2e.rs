@@ -1,11 +1,11 @@
-//! End-to-end integration tests for the `cachedb-bench` load generator.
+//! End-to-end integration tests for the `skiff-bench` load generator.
 
 #![cfg(target_os = "linux")]
 
 mod common;
 
-use cachedb::bench::{BenchConfig, Workload, run_benchmark};
 use common::TestServer;
+use skiffdb::bench::{BenchConfig, Workload, run_benchmark};
 
 /// Tests the benchmark load generator across all four standard workloads (`read`, `write`,
 /// `mixed`, `bump`) against a live [`TestServer`].

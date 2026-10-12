@@ -1,10 +1,10 @@
-//! Command-line client application for cachedb.
+//! Command-line client application for SkiffDB.
 
 use std::env;
 use std::io::IsTerminal;
 use std::process;
 
-use cachedb::cli::{HELP_TEXT, parse_args, run};
+use skiffdb::cli::{HELP_TEXT, parse_args, run};
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -22,7 +22,7 @@ fn main() {
     }
 
     if config.show_version {
-        println!("cachedb-cli {}", env!("CARGO_PKG_VERSION"));
+        println!("skiff-cli {}", env!("CARGO_PKG_VERSION"));
         process::exit(0);
     }
 
@@ -33,3 +33,4 @@ fn main() {
     let code = run(config, stdin.lock(), &mut stdout, &mut stderr, is_terminal);
     process::exit(code);
 }
+

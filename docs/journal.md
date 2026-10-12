@@ -1763,3 +1763,21 @@ Identified several high-leverage architectural opportunities for subsequent phas
 - **Compact Tag / Fingerprint Array**: Adding a 1-byte control tag table to Robin Hood hash table slots to terminate get-miss probe sequences within a single cache line fetch.
 - **Configurable Memory Limits & Eviction**: Enforcing maximum memory caps with LRU / LFU eviction policies.
 - **Durability & Persistence**: Write-ahead logging (WAL) and background snapshotting.
+
+---
+
+## 2026-10-12: Phase 1 — Project Renaming to SkiffDB
+
+### 1. Motivation & Naming Choice
+The initial working codename `cachedb` was functional but generic. We selected **SkiffDB** (`skiffdb`) as the permanent brand name.
+- **Character & Metaphor**: A skiff is a light, fast, agile watercraft with zero unnecessary baggage. This directly reflects the project's engineering philosophy: single-threaded event loop, zero-dependency `std`-only Rust, non-allocating Robin Hood hash table probing, deterministic protocol parsing, and low latency.
+- **Binary Suite**:
+  - `skiffd`: The lightweight single-threaded database daemon.
+  - `skiff-cli`: The interactive REPL and one-shot command-line client.
+  - `skiff-bench`: The high-throughput load generator and pipeline latency benchmark tool.
+- **Default Extensions**: `.skfj` for write-ahead journal files and `.skfs` for snapshot image files.
+
+### 2. Protocol Wire Compatibility Preservation
+To honor the strict freeze of the Phase 0 Protocol v0.1 specification (`docs/spec/`):
+- Wire magic bytes remain `0x43444231` (`CDB1`). No wire protocol bits or header structures were altered.
+- Server handshake (`HELLO`) reports `server_name = "skiffd"`, and default client connection identifies as `client_name = "skiff-client/0.1.0"`.

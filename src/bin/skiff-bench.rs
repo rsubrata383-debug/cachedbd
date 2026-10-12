@@ -1,9 +1,9 @@
-//! Command-line benchmark load generator binary for cachedb.
+//! Command-line benchmark load generator binary for SkiffDB.
 
 use std::env;
 use std::process;
 
-use cachedb::bench::{HELP_TEXT, parse_args, run_benchmark};
+use skiffdb::bench::{HELP_TEXT, parse_args, run_benchmark};
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();

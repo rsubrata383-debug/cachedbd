@@ -1,7 +1,7 @@
 #![no_main]
 
-use cachedb::proto::{decode_frame, encode_frame, Decoded, HEADER_LEN};
 use libfuzzer_sys::fuzz_target;
+use skiffdb::proto::{Decoded, HEADER_LEN, decode_frame, encode_frame};
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(Decoded::Complete((frame, used))) = decode_frame(data) {

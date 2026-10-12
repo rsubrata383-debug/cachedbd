@@ -1,4 +1,4 @@
-//! End-to-end integration tests for cachedb.
+//! End-to-end integration tests for SkiffDB.
 
 // AGENTS.md Section 5: unwrap and expect are explicitly allowed in tests.
 #![allow(
@@ -132,8 +132,8 @@ fn test_nonblocking_echo_server_concurrent_clients() -> Result<(), Box<dyn std::
 #[cfg(target_os = "linux")]
 #[test]
 fn test_event_loop_shutdown_via_signal_flag() -> Result<(), Box<dyn std::error::Error>> {
-    use cachedb::net::event_loop::{EventLoop, Handler, Token};
-    use cachedb::net::sys::{EpollFlags, is_shutdown_requested, request_shutdown, reset_shutdown};
+    use skiffdb::net::event_loop::{EventLoop, Handler, Token};
+    use skiffdb::net::sys::{EpollFlags, is_shutdown_requested, request_shutdown, reset_shutdown};
 
     struct NoopHandler;
     impl Handler for NoopHandler {
@@ -170,9 +170,9 @@ fn test_event_loop_shutdown_via_signal_flag() -> Result<(), Box<dyn std::error::
 #[test]
 fn test_connection_table_backpressure_interest_toggling() -> Result<(), Box<dyn std::error::Error>>
 {
-    use cachedb::net::connection::ConnectionTable;
-    use cachedb::net::event_loop::EventLoop;
-    use cachedb::net::sys::EpollFlags;
+    use skiffdb::net::connection::ConnectionTable;
+    use skiffdb::net::event_loop::EventLoop;
+    use skiffdb::net::sys::EpollFlags;
 
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let addr = listener.local_addr()?;
@@ -216,9 +216,9 @@ fn test_connection_table_backpressure_interest_toggling() -> Result<(), Box<dyn 
 #[cfg(target_os = "linux")]
 #[test]
 fn test_connection_table_capacity_and_shutdown_drain() -> Result<(), Box<dyn std::error::Error>> {
-    use cachedb::net::connection::ConnectionTable;
-    use cachedb::net::event_loop::EventLoop;
-    use cachedb::net::sys::EpollFlags;
+    use skiffdb::net::connection::ConnectionTable;
+    use skiffdb::net::event_loop::EventLoop;
+    use skiffdb::net::sys::EpollFlags;
 
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let addr = listener.local_addr()?;
@@ -271,7 +271,7 @@ fn test_connection_table_capacity_and_shutdown_drain() -> Result<(), Box<dyn std
         assert_eq!(conn1.desired_flags(), EpollFlags::WRITABLE);
         // Flush client 1.
         let status = conn1.flush_outgoing()?;
-        assert_eq!(status, cachedb::net::connection::WriteStatus::Complete);
+        assert_eq!(status, skiffdb::net::connection::WriteStatus::Complete);
         assert!(conn1.is_closed());
     }
 

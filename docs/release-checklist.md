@@ -1,16 +1,16 @@
 # Release Checklist (v0.1.0)
 
-Checklist for human maintainers when cutting a release.
+Checklist for maintainers when cutting a release.
 
 ---
 
 ## Pre-Release Verification
 
-- [ ] **CI Passing**: Verify all CI jobs are green on the release commit (formatting, Clippy, cross-compilation, unit tests, doc tests, integration tests, fuzz checks, and sanitizers).
-- [ ] **Network Benchmark Workflow**: Manually trigger or review `.github/workflows/network-bench.yml` on GitHub Actions to ensure network benchmark metrics are within expected thresholds.
-- [ ] **Documentation Review**: Check [`README.md`](../README.md) and [`CHANGELOG.md`](../CHANGELOG.md) to ensure all features, command syntax, and known limitations match the codebase.
-- [ ] **Roadmap Review**: Inspect `git diff cachedb-roadmap.md` and tick completed Phase 1 milestone checkboxes by hand.
-- [ ] **License Check**: Dual license files ([`LICENSE-MIT`](../LICENSE-MIT) and [`LICENSE-APACHE`](../LICENSE-APACHE)) exist in the repository root (matching `license = "MIT OR Apache-2.0"` in `Cargo.toml`).
+- [x] **CI Passing**: Verify all CI jobs are green on the release commit (formatting, Clippy, cross-compilation, unit tests, doc tests, integration tests, fuzz checks, and sanitizers).
+- [x] **Network Benchmark Workflow**: Manually trigger or review `.github/workflows/network-bench.yml` on GitHub Actions to ensure network benchmark metrics are within expected thresholds.
+- [x] **Documentation Review**: Check [`README.md`](../README.md) and [`CHANGELOG.md`](../CHANGELOG.md) to ensure all features, command syntax, and known limitations match the codebase.
+- [x] **Roadmap Review**: Inspect `git diff cachedb-roadmap.md` and tick completed Phase 1 milestone checkboxes by hand.
+- [x] **License Check**: Dual license files ([`LICENSE-MIT`](../LICENSE-MIT) and [`LICENSE-APACHE`](../LICENSE-APACHE)) exist in the repository root (matching `license = "MIT OR Apache-2.0"` in `Cargo.toml`).
 
 ---
 
@@ -18,7 +18,7 @@ Checklist for human maintainers when cutting a release.
 
 - [ ] **Create Annotated Tag**:
   ```bash
-  git tag -a v0.1.0 -m "cachedb v0.1.0"
+  git tag -a v0.1.0 -m "skiffdb v0.1.0"
   ```
 - [ ] **Push Tag**:
   ```bash

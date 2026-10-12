@@ -10,13 +10,13 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use cachedb::cmd::{
+use common::XorShift64;
+use skiffdb::cmd::{
     ERR_MALFORMED_PAYLOAD, ERR_SYNTAX_ERROR, ERR_UNKNOWN_COMMAND, Engine, Session, handle_request,
 };
-use cachedb::proto::header::{FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
-use cachedb::proto::{Frame, Value};
-use cachedb::server::Server;
-use common::XorShift64;
+use skiffdb::proto::header::{FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
+use skiffdb::proto::{Frame, Value};
+use skiffdb::server::Server;
 use std::net::TcpListener;
 
 #[test]
@@ -314,7 +314,7 @@ fn test_model_random_frames_never_panic() {
 
 #[test]
 fn test_migration_timer_hook_finishes_resizing() -> Result<(), Box<dyn std::error::Error>> {
-    use cachedb::net::event_loop::Handler;
+    use skiffdb::net::event_loop::Handler;
 
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let mut server = Server::new(listener)?;
@@ -327,7 +327,7 @@ fn test_migration_timer_hook_finishes_resizing() -> Result<(), Box<dyn std::erro
         let _ = server.engine_mut().store_mut().put(
             &key,
             Value::Int(i),
-            cachedb::store::PutCondition::Always,
+            skiffdb::store::PutCondition::Always,
         );
         assert!(i < 100_000, "table must start resizing");
     }

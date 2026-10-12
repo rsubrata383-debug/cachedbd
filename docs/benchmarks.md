@@ -1,6 +1,6 @@
 # In-Memory Store Benchmarks
 
-Comparative benchmark suite evaluating [`cachedb::store::RobinHoodTable`] against [`std::collections::HashMap`] under synthetic key-value workloads.
+Comparative benchmark suite evaluating [`skiffdb::store::RobinHoodTable`] against [`std::collections::HashMap`] under synthetic key-value workloads.
 
 Benchmarks were executed on GitHub Actions CI runners (`ubuntu-24.04`, x86_64, standard Release profile):
 - **1,000,000 keys**: `ci-linux-1M-v2.txt`
@@ -318,9 +318,9 @@ Measured on Windows 11 x86_64 (`cargo bench --bench store_bench -- --keys 100000
 
 ---
 
-## Network Load Generator Benchmarks (`cachedb-bench`)
+## Network Load Generator Benchmarks (`skiff-bench`)
 
-The `cachedb-bench` tool generates synthetic multi-connection client workloads over standard TCP sockets using the native client protocol implementation.
+The `skiff-bench` tool generates synthetic multi-connection client workloads over standard TCP sockets using the native client protocol implementation.
 
 ### Running Benchmarks Locally (Script-Free)
 
@@ -328,40 +328,40 @@ To run the benchmark suite manually without external scripts:
 
 1. **Build Release Binaries**:
    ```bash
-   cargo build --release --bin cachedbd --bin cachedb-bench
+   cargo build --release --bin skiffd --bin skiff-bench
    ```
 
 2. **Start the Database Daemon**:
    In a separate terminal (or in the background):
    ```bash
-   ./target/release/cachedbd --bind 127.0.0.1 --port 7878
+   ./target/release/skiffd --bind 127.0.0.1 --port 7878
    ```
 
-3. **Run Workloads with `cachedb-bench`**:
+3. **Run Workloads with `skiff-bench`**:
 
    - **Read-Heavy Workload (95% Fetch, 5% Put, Pipeline 16)**:
      ```bash
-     ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload read --connections 4 --duration 10 --warmup 2 --pipeline 16 --preload
+     ./target/release/skiff-bench --addr 127.0.0.1:7878 --workload read --connections 4 --duration 10 --warmup 2 --pipeline 16 --preload
      ```
 
    - **Read-Heavy Workload (Unpipelined, Pipeline 1)**:
      ```bash
-     ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload read --connections 4 --duration 10 --warmup 2 --pipeline 1
+     ./target/release/skiff-bench --addr 127.0.0.1:7878 --workload read --connections 4 --duration 10 --warmup 2 --pipeline 1
      ```
 
    - **Write-Only Workload (100% Put, Pipeline 16)**:
      ```bash
-     ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload write --connections 4 --duration 10 --warmup 2 --pipeline 16
+     ./target/release/skiff-bench --addr 127.0.0.1:7878 --workload write --connections 4 --duration 10 --warmup 2 --pipeline 16
      ```
 
    - **Mixed Workload (50% Fetch, 40% Put, 5% Bump, 5% Drop, Pipeline 16)**:
      ```bash
-     ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload mixed --connections 4 --duration 10 --warmup 2 --pipeline 16 --preload
+     ./target/release/skiff-bench --addr 127.0.0.1:7878 --workload mixed --connections 4 --duration 10 --warmup 2 --pipeline 16 --preload
      ```
 
    - **Counter Workload (100% Bump, Pipeline 16)**:
      ```bash
-     ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload bump --connections 4 --duration 10 --warmup 2 --pipeline 16
+     ./target/release/skiff-bench --addr 127.0.0.1:7878 --workload bump --connections 4 --duration 10 --warmup 2 --pipeline 16
      ```
 
 ### Honest Limits

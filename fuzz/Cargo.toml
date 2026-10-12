@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-cachedb = { path = ".." }
+skiffdb = { path = ".." }
 
 [[bin]]
 name = "decode_frame"
@@ -30,4 +30,3 @@ test = false
 doc = false
 
 [workspace]
-

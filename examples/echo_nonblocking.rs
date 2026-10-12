@@ -1,14 +1,14 @@
 //! Educational non-blocking TCP echo server for Phase 1, Week 3, step 4.
 //!
-//! This example demonstrates event-driven networking using [`cachedb::net::event_loop::EventLoop`].
+//! This example demonstrates event-driven networking using [`skiffdb::net::event_loop::EventLoop`].
 //! It shows how a single thread can concurrently handle multiple connected clients without
 //! blocking, managing partial reads, partial writes, and `WouldBlock` (`EAGAIN`) conditions.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use cachedb::net::connection::{ConnectionTable, DEFAULT_MAX_CONNECTIONS, ReadStatus, WriteStatus};
-use cachedb::net::event_loop::{EventLoop, Handler, TimerId, Token};
-use cachedb::net::sys::{EpollFlags, as_raw_fd};
+use skiffdb::net::connection::{ConnectionTable, DEFAULT_MAX_CONNECTIONS, ReadStatus, WriteStatus};
+use skiffdb::net::event_loop::{EventLoop, Handler, TimerId, Token};
+use skiffdb::net::sys::{EpollFlags, as_raw_fd};
 use std::io;
 use std::net::TcpListener;
 use std::time::Duration;
@@ -243,8 +243,8 @@ impl Handler for EchoServerHandler {
 ///   might be queued in the kernel backlog. We accept in a loop until `WouldBlock`.
 /// - **Connection Table**: Centralized table managing active client sessions, unique token IDs,
 ///   and capacity limit enforcement.
-/// - **Streaming Buffers & Write Queues**: Each connection maintains an inbound [`cachedb::net::buffer::ReadBuffer`]
-///   and outbound [`cachedb::net::buffer::WriteQueue`].
+/// - **Streaming Buffers & Write Queues**: Each connection maintains an inbound [`skiffdb::net::buffer::ReadBuffer`]
+///   and outbound [`skiffdb::net::buffer::WriteQueue`].
 /// - **Dynamic Backpressure**: When a connection's write queue exceeds high watermark limits,
 ///   `desired_flags()` drops `READABLE`, preventing slow clients from overwhelming server memory.
 /// - **Connection Limits & Idle Timeouts**: Rejects new clients when capacity is reached and sweeps
@@ -415,7 +415,7 @@ impl NonBlockingEchoServer {
 }
 
 fn main() -> io::Result<()> {
-    cachedb::net::sys::install_shutdown_signal_handlers()?;
+    skiffdb::net::sys::install_shutdown_signal_handlers()?;
 
     let listener = TcpListener::bind("127.0.0.1:7381")?;
     println!("Non-blocking TCP echo server listening on 127.0.0.1:7381");
@@ -476,7 +476,7 @@ mod tests {
         assert!(res1.is_ok(), "client 1 read should succeed");
 
         // Client 2 sets linger to 0 and drops immediately (TCP RST).
-        cachedb::net::sys::set_linger_zero(cachedb::net::sys::as_raw_fd(&client2))?;
+        skiffdb::net::sys::set_linger_zero(skiffdb::net::sys::as_raw_fd(&client2))?;
         drop(client2);
 
         // Wait briefly for OS to deliver RST packet to local loopback socket.

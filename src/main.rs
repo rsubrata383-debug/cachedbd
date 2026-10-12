@@ -1,4 +1,4 @@
-//! Main entry point for the cachedbd server binary.
+//! Main entry point for the skiffd server binary.
 
 use std::env;
 #[cfg(target_os = "linux")]
@@ -7,7 +7,7 @@ use std::process;
 use std::time::Duration;
 
 fn print_help() {
-    println!("Usage: cachedbd [OPTIONS]");
+    println!("Usage: skiffd [OPTIONS]");
     println!();
     println!("Options:");
     println!("  --bind <ADDR>          IP address to bind to (default: 127.0.0.1)");
@@ -79,15 +79,15 @@ fn main() {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (addr_str, idle_timeout);
-        eprintln!("cachedbd needs Linux (epoll)");
+        eprintln!("skiffd needs Linux (epoll)");
         process::exit(1);
     }
 
     #[cfg(target_os = "linux")]
     {
-        use cachedb::net::event_loop::EventLoop;
-        use cachedb::net::sys::{EpollFlags, as_raw_fd};
-        use cachedb::server::{LISTENER_TOKEN, Server, ServerConfig};
+        use skiffdb::net::event_loop::EventLoop;
+        use skiffdb::net::sys::{EpollFlags, as_raw_fd};
+        use skiffdb::server::{LISTENER_TOKEN, Server, ServerConfig};
 
         let listener = match TcpListener::bind(&addr_str) {
             Ok(l) => l,
@@ -97,7 +97,7 @@ fn main() {
             }
         };
 
-        println!("cachedbd 0.1.0 listening on {addr_str}");
+        println!("skiffd 0.1.0 listening on {addr_str}");
 
         let mut event_loop = match EventLoop::new() {
             Ok(el) => el,
@@ -119,7 +119,7 @@ fn main() {
             ..ServerConfig::default()
         };
 
-        let mut server = match Server::with_config(listener, cachedb::cmd::Engine::new(), config) {
+        let mut server = match Server::with_config(listener, skiffdb::cmd::Engine::new(), config) {
             Ok(s) => s,
             Err(err) => {
                 eprintln!("error: failed to initialize server: {err}");

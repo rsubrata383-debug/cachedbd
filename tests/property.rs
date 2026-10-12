@@ -1,18 +1,19 @@
-//! Property-based tests for [`cachedb::store::RobinHoodTable`].
+//! Property-based tests for [`skiffdb::store::RobinHoodTable`].
 //!
 //! Includes a custom deterministic XorShift RNG harness, multi-seed driver,
 //! and automated test shrinker without external testing dependencies.
 
 use std::collections::HashMap;
 
-use cachedb::store::RobinHoodTable;
+use skiffdb::store::RobinHoodTable;
 
 mod common;
 use common::XorShift64;
 
 /// Returns the number of seeds to execute per property test.
 fn num_seeds() -> usize {
-    std::env::var("CACHEDB_PROP_SEEDS")
+    std::env::var("SKIFFDB_PROP_SEEDS")
+        .or_else(|_| std::env::var("CACHEDB_PROP_SEEDS"))
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(24)

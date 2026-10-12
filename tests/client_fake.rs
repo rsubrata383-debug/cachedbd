@@ -1,4 +1,4 @@
-//! Integration and fault injection tests for [`cachedb::client::Client`].
+//! Integration and fault injection tests for [`skiffdb::client::Client`].
 //!
 //! Evaluates round-trip commands, pipelining, typing helpers, server error mapping,
 //! model conformance, and error resilience against misbehaving servers using a
@@ -24,12 +24,12 @@ use std::net::TcpListener;
 use std::thread;
 use std::time::Duration;
 
-use cachedb::client::{Client, ClientConfig, ClientError};
-use cachedb::proto::decode::decode_frame;
-use cachedb::proto::encode::encode_frame;
-use cachedb::proto::header::{FLAG_RESPONSE, Header, Opcode};
-use cachedb::proto::{Decoded, Frame, Value};
 use common::{TestBlockingServer, XorShift64};
+use skiffdb::client::{Client, ClientConfig, ClientError};
+use skiffdb::proto::decode::decode_frame;
+use skiffdb::proto::encode::encode_frame;
+use skiffdb::proto::header::{FLAG_RESPONSE, Header, Opcode};
+use skiffdb::proto::{Decoded, Frame, Value};
 
 // 1. connect + hello: verifies server_info metadata
 #[test]
@@ -38,7 +38,7 @@ fn test_client_connect_and_hello() {
     let client = Client::connect(server.addr()).expect("client connect");
 
     let info = client.server_info();
-    assert_eq!(info.server_name(), "cachedbd");
+    assert_eq!(info.server_name(), "skiffd");
     assert_eq!(info.server_version(), "0.1.0");
     assert_eq!(info.client_id(), 1);
     assert!(info.max_frame_size().is_some());
@@ -353,7 +353,7 @@ fn test_bad_server_wrong_request_id() {
             let entries = vec![
                 (
                     Value::Text("server_name".to_string()),
-                    Value::Text("cachedbd".to_string()),
+                    Value::Text("skiffd".to_string()),
                 ),
                 (
                     Value::Text("server_version".to_string()),
@@ -587,7 +587,7 @@ fn test_client_pipeline_chunking_deadlock_prevention() {
                         Value::Map(vec![
                             (
                                 Value::Text("server_name".to_string()),
-                                Value::Text("cachedbd".to_string()),
+                                Value::Text("skiffd".to_string()),
                             ),
                             (
                                 Value::Text("server_version".to_string()),
@@ -697,7 +697,7 @@ fn test_client_pipeline_wrong_opcode_breaks_client() {
                         Value::Map(vec![
                             (
                                 Value::Text("server_name".to_string()),
-                                Value::Text("cachedbd".to_string()),
+                                Value::Text("skiffd".to_string()),
                             ),
                             (
                                 Value::Text("server_version".to_string()),

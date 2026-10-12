@@ -7,11 +7,11 @@
     clippy::indexing_slicing
 )]
 
-use cachedb::cmd::{
+use skiffdb::cmd::{
     ERR_AUTH_REQUIRED, ERR_INVALID_ARGUMENT, ERR_UNSUPPORTED_PROTOCOL_VERSION, ERR_WRONG_ARG_COUNT,
     Engine, Session,
 };
-use cachedb::proto::Value;
+use skiffdb::proto::Value;
 
 #[test]
 fn test_hello_spec_example() {
@@ -44,7 +44,7 @@ fn test_hello_spec_example() {
 
     assert_eq!(
         map.get("server_name"),
-        Some(&Value::Text("cachedbd".to_string()))
+        Some(&Value::Text("skiffd".to_string()))
     );
     assert_eq!(
         map.get("server_version"),
@@ -221,9 +221,9 @@ fn test_commands_allowed_without_hello_first() {
 
 #[test]
 fn test_hello_require_auth_does_not_authenticate_and_no_auth_commands_work() {
-    use cachedb::cmd::handle_request;
-    use cachedb::proto::Frame;
-    use cachedb::proto::header::{FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
+    use skiffdb::cmd::handle_request;
+    use skiffdb::proto::Frame;
+    use skiffdb::proto::header::{FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
 
     let mut engine = Engine::new();
     engine.config_mut().require_auth = true;

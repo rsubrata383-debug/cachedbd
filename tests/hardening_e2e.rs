@@ -4,12 +4,12 @@
 
 mod common;
 
-use cachedb::client::Client;
-use cachedb::proto::encode::encode_frame;
-use cachedb::proto::header::{Header, Opcode};
-use cachedb::proto::{Frame, Value};
-use cachedb::server::ServerConfig;
 use common::{TestServer, expect_ok_reply, raw_handshake, read_one_frame};
+use skiffdb::client::Client;
+use skiffdb::proto::encode::encode_frame;
+use skiffdb::proto::header::{Header, Opcode};
+use skiffdb::proto::{Frame, Value};
+use skiffdb::server::ServerConfig;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::Ordering;
@@ -674,7 +674,7 @@ fn test_half_close_single_request_receives_reply() {
 
 #[test]
 fn test_malformed_hello_payload_rejected_with_1006_and_closed() {
-    use cachedb::proto::header::{FLAG_ERROR, FLAG_RESPONSE};
+    use skiffdb::proto::header::{FLAG_ERROR, FLAG_RESPONSE};
 
     let config = ServerConfig {
         idle_timeout: None,

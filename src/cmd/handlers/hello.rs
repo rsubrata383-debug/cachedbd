@@ -16,7 +16,7 @@ pub fn build_hello_response(config: &CmdConfig, session: &Session) -> HelloRespo
     let max_value_size = i64::try_from(config.max_value_size).unwrap_or(32 * 1024 * 1024);
 
     HelloResponse {
-        server_name: "cachedbd".to_string(),
+        server_name: "skiffd".to_string(),
         server_version: env!("CARGO_PKG_VERSION").to_string(),
         protocol_version: 1,
         client_id,

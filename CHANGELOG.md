@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `cachedb` will be documented in this file.
+All notable changes to `SkiffDB` (formerly codenamed `cachedb`) will be documented in this file.
 
 ## v0.1.0 - 2026-10-12
 
@@ -18,7 +18,7 @@ All notable changes to `cachedb` will be documented in this file.
   - `hello [version name [token]]`: Protocol negotiation and client handshake.
   - `quit`: Clean connection termination.
 - **Structured Errors**: Categorized error codes across classes (protocol `1xxx`, command `2xxx`, type/value `3xxx`, storage `4xxx`, server `5xxx`) with human-readable error messages.
-- **Server Architecture**: Single-threaded event-driven server (`cachedbd`) on Linux `epoll` with:
+- **Server Architecture**: Single-threaded event-driven server (`skiffd`) on Linux `epoll` with:
   - Backpressure flow control using dual watermarks (`PAUSE_WRITE_WATERMARK = 64 KiB`, `RESUME_WRITE_WATERMARK = 16 KiB`).
   - Fairness limits per turn (`MAX_FRAMES_PER_READ = 64`, `MAX_CHUNK_BYTES_PER_TURN = 256 KiB`).
   - Idle timeout tracking via wheel timer / timer lists.
@@ -26,8 +26,8 @@ All notable changes to `cachedb` will be documented in this file.
   - Socket tuning with `TCP_NODELAY` to prevent Nagle and delayed-ACK deadlocks.
   - Reply coalescing (`COALESCE_LIMIT = 64 KiB`) in `WriteQueue` merging small pipelined reply buffers into single write syscalls.
 - **Client Library**: Synchronous client API (`Client`) in `src/client.rs` with automatic `HELLO` negotiation, strongly-typed command methods, pipelined batch execution (`pipeline`), and zero third-party dependencies.
-- **CLI Shell**: `cachedb-cli` utility supporting both one-shot commands and interactive REPL mode with syntax highlighting/formatting, escaping, and structured exit codes.
-- **Load Generator & Benchmarking**: `cachedb-bench` tool with configurable synthetic workloads (`read`, `write`, `mixed`, `bump`), concurrent connection pools, configurable pipeline depth, latency percentile tracking, and JSON output formatting.
+- **CLI Shell**: `skiff-cli` utility supporting both one-shot commands and interactive REPL mode with syntax highlighting/formatting, escaping, and structured exit codes.
+- **Load Generator & Benchmarking**: `skiff-bench` tool with configurable synthetic workloads (`read`, `write`, `mixed`, `bump`), concurrent connection pools, configurable pipeline depth, latency percentile tracking, and JSON output formatting.
 - **Testing & Fuzzing**: Comprehensive test suites including `cargo-fuzz` targets (`fuzz_frame_decode`, `fuzz_item_decode`), CI workflows with AddressSanitizer (`ASan`), and soak tests validating up to 10,000 concurrent idle connections.
 
 ### Performance
@@ -44,4 +44,4 @@ All notable changes to `cachedb` will be documented in this file.
 - **Single-Threaded Server**: Event loop and storage core run on a single thread; cannot utilize multiple CPU cores for request execution.
 - **Linear Command Lookup**: Dispatch engine uses linear scan over registered commands.
 - **Value Cloning on Fetch**: `fetch` clones values from storage during reply frame construction.
-- **Project Naming**: Package and binary names (`cachedb`/`cachedbd`) are subject to change prior to public registry publication.
+- **Project Identity**: Named SkiffDB (`skiffdb`, daemon `skiffd`, CLI `skiff-cli`, bench `skiff-bench`), with protocol wire magic `CDB1` preserved for v0.1 compatibility.

@@ -1,4 +1,4 @@
-//! Benchmark suite comparing [`cachedb::store::RobinHoodTable`] against [`std::collections::HashMap`].
+//! Benchmark suite comparing [`skiffdb::store::RobinHoodTable`] against [`std::collections::HashMap`].
 //!
 //! Measures throughput, latency percentiles, latency spikes, table quality metrics,
 //! and resident set size (VmRSS) across synthetic key-value workloads.
@@ -8,7 +8,7 @@ use std::collections::{BinaryHeap, HashMap};
 use std::hash::BuildHasher;
 use std::time::{Duration, Instant};
 
-use cachedb::store::{RobinHoodTable, hash64, slot_size};
+use skiffdb::store::{RobinHoodTable, hash64, slot_size};
 
 /// Deterministic 64-bit XorShift generator strictly conforming to AGENTS.md rules.
 #[derive(Debug, Clone)]
@@ -197,7 +197,7 @@ fn build_miss_keys(count: usize) -> Vec<Box<[u8]>> {
 fn main() {
     let config = BenchConfig::parse();
 
-    println!("# Cachedb Store Benchmark: RobinHoodTable vs std::collections::HashMap");
+    println!("# SkiffDB Store Benchmark: RobinHoodTable vs std::collections::HashMap");
     println!();
     println!(
         "- **Configuration**: {} keys, {} mixed operations{}",

@@ -395,7 +395,7 @@ Before you finish, check:
 
 ## Project Roadmap
 
-The plan for this project is in `cachedb-roadmap.md`.
+The plan for this project is in `skiffdb-roadmap.md`.
 Read it before starting any big task.
 Do not build things that are not in the roadmap without asking me.
 

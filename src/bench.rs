@@ -1,4 +1,4 @@
-//! Benchmark load generator module for cachedb.
+//! Benchmark load generator module for SkiffDB.
 //!
 //! Provides a configurable multi-threaded synthetic load generator,
 //! command-line option parsing, workload distribution generators,
@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 use crate::client::Client;
 use crate::proto::Value;
 
-/// Usage and help string for the `cachedb-bench` tool.
+/// Usage and help string for the `skiff-bench` tool.
 pub const HELP_TEXT: &str = "\
-Usage: cachedb-bench [OPTIONS]
+Usage: skiff-bench [OPTIONS]
 
 Options:
   --addr HOST:PORT       Server address to connect to (default: 127.0.0.1:7878)
@@ -598,7 +598,7 @@ impl BenchReport {
     ///
     /// Returns [`io::Error`] if writing fails.
     pub fn print_table<W: Write>(&self, out: &mut W) -> io::Result<()> {
-        writeln!(out, "# Cachedb Benchmark Report")?;
+        writeln!(out, "# SkiffDB Benchmark Report")?;
         writeln!(out)?;
         writeln!(out, "Target:            {}", self.config.addr)?;
         writeln!(

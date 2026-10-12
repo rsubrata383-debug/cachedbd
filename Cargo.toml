@@ -1,15 +1,15 @@
 [package]
-name = "cachedb"
+name = "skiffdb"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "A lightweight caching database"
+description = "A fast, in-memory key-value database"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/rsubrata383-debug/cachedbd"
 
 [[bin]]
-name = "cachedbd"
+name = "skiffd"
 path = "src/main.rs"
 
 [[example]]

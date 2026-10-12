@@ -1,7 +1,7 @@
 #![no_main]
 
-use cachedb::proto::{HelloRequest, HelloResponse, decode_value, encode_value};
 use libfuzzer_sys::fuzz_target;
+use skiffdb::proto::{HelloRequest, HelloResponse, decode_value, encode_value};
 
 fuzz_target!(|data: &[u8]| {
     if let Ok((val, _used)) = decode_value(data) {

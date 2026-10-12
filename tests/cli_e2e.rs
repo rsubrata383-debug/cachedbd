@@ -1,4 +1,4 @@
-//! End-to-end integration tests for `cachedb-cli`.
+//! End-to-end integration tests for `skiff-cli`.
 
 mod common;
 
@@ -10,26 +10,26 @@ use common::TestBlockingServer;
 
 #[test]
 fn test_cli_help_and_version() {
-    let help = Command::new(env!("CARGO_BIN_EXE_cachedb-cli"))
+    let help = Command::new(env!("CARGO_BIN_EXE_skiff-cli"))
         .arg("--help")
         .output()
         .expect("run --help");
     assert_eq!(help.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&help.stdout);
-    assert!(stdout.contains("cachedb-cli [OPTIONS]"));
+    assert!(stdout.contains("skiff-cli [OPTIONS]"));
 
-    let version = Command::new(env!("CARGO_BIN_EXE_cachedb-cli"))
+    let version = Command::new(env!("CARGO_BIN_EXE_skiff-cli"))
         .arg("--version")
         .output()
         .expect("run --version");
     assert_eq!(version.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&version.stdout);
-    assert!(stdout.contains("cachedb-cli 0.1.0"));
+    assert!(stdout.contains("skiff-cli 0.1.0"));
 }
 
 #[test]
 fn test_cli_usage_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_cachedb-cli"))
+    let output = Command::new(env!("CARGO_BIN_EXE_skiff-cli"))
         .arg("--invalid-flag")
         .output()
         .expect("run with invalid flag");
@@ -45,7 +45,7 @@ fn test_cli_connection_error_closed_port() {
         listener.local_addr().expect("addr").port()
     };
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cachedb-cli"))
+    let output = Command::new(env!("CARGO_BIN_EXE_skiff-cli"))
         .args(["--port", &closed_port.to_string(), "ping"])
         .output()
         .expect("run against closed port");
@@ -60,7 +60,7 @@ fn test_cli_one_shot_commands() {
     let port = server.addr().port().to_string();
 
     // 1. put foo bar -> exit 0, stdout has (bool) true
-    let put_out = Command::new(env!("CARGO_BIN_EXE_cachedb-cli"))
+    let put_out = Command::new(env!("CARGO_BIN_EXE_skiff-cli"))
         .args(["--host", "127.0.0.1", "--port", &port, "put", "foo", "bar"])
         .output()
         .expect("run put");
@@ -69,7 +69,7 @@ fn test_cli_one_shot_commands() {
     assert!(stdout.contains("(bool) true"));
 
     // 2. fetch foo -> exit 0, stdout has "bar"
-    let fetch_out = Command::new(env!("CARGO_BIN_EXE_cachedb-cli"))
+    let fetch_out = Command::new(env!("CARGO_BIN_EXE_skiff-cli"))
         .args(["--host", "127.0.0.1", "--port", &port, "fetch", "foo"])
         .output()
         .expect("run fetch");
@@ -78,7 +78,7 @@ fn test_cli_one_shot_commands() {
     assert_eq!(stdout.trim(), "\"bar\"");
 
     // 3. unknown_cmd -> exit 1, stderr has (error 2001) unknown command
-    let unknown_out = Command::new(env!("CARGO_BIN_EXE_cachedb-cli"))
+    let unknown_out = Command::new(env!("CARGO_BIN_EXE_skiff-cli"))
         .args(["--host", "127.0.0.1", "--port", &port, "unknown_cmd"])
         .output()
         .expect("run unknown_cmd");
@@ -87,7 +87,7 @@ fn test_cli_one_shot_commands() {
     assert!(stderr.contains("(error 2001) unknown command"));
 
     // 4. bump against text value -> exit 1, stderr has (error 3004) value is not an integer
-    let bump_out = Command::new(env!("CARGO_BIN_EXE_cachedb-cli"))
+    let bump_out = Command::new(env!("CARGO_BIN_EXE_skiff-cli"))
         .args(["--host", "127.0.0.1", "--port", &port, "bump", "foo"])
         .output()
         .expect("run bump");
@@ -101,7 +101,7 @@ fn test_cli_interactive_piped() {
     let server = TestBlockingServer::start();
     let port = server.addr().port().to_string();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cachedb-cli"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_skiff-cli"))
         .args(["--host", "127.0.0.1", "--port", &port])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -128,7 +128,7 @@ fn test_cli_interactive_continues_after_errors() {
     let server = TestBlockingServer::start();
     let port = server.addr().port().to_string();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cachedb-cli"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_skiff-cli"))
         .args(["--host", "127.0.0.1", "--port", &port])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -157,10 +157,10 @@ fn test_cli_interactive_continues_after_errors() {
 
 #[test]
 fn test_cli_interactive_server_disconnects() {
-    use cachedb::proto::decode::decode_frame;
-    use cachedb::proto::encode::encode_frame;
-    use cachedb::proto::header::{FLAG_RESPONSE, Header, Opcode};
-    use cachedb::proto::{Decoded, Frame};
+    use skiffdb::proto::decode::decode_frame;
+    use skiffdb::proto::encode::encode_frame;
+    use skiffdb::proto::header::{FLAG_RESPONSE, Header, Opcode};
+    use skiffdb::proto::{Decoded, Frame};
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
     let port = listener.local_addr().expect("addr").port().to_string();
@@ -185,7 +185,7 @@ fn test_cli_interactive_server_disconnects() {
 
         // Send HELLO response
         let resp_header = Header::new(FLAG_RESPONSE, 1, Opcode::Hello, 0);
-        let resp_val = cachedb::proto::hello::HelloResponse::new(
+        let resp_val = skiffdb::proto::hello::HelloResponse::new(
             "test-server".to_string(),
             "0.1.0".to_string(),
             1,
@@ -200,7 +200,7 @@ fn test_cli_interactive_server_disconnects() {
         drop(stream);
     });
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cachedb-cli"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_skiff-cli"))
         .args(["--host", "127.0.0.1", "--port", &port])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

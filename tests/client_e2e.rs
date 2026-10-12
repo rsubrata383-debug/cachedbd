@@ -1,4 +1,4 @@
-//! Real end-to-end TCP integration tests for [`cachedb::client::Client`].
+//! Real end-to-end TCP integration tests for [`skiffdb::client::Client`].
 //!
 //! Evaluates high-throughput pipelining, bulk operations, and multi-threaded
 //! concurrent client connections against the Linux epoll event loop server.
@@ -17,9 +17,9 @@ mod common;
 
 use std::thread;
 
-use cachedb::client::Client;
-use cachedb::proto::Value;
 use common::TestServer;
+use skiffdb::client::Client;
+use skiffdb::proto::Value;
 
 // 1. connect, 10,000 puts via pipeline in batches of 500, then fetch all
 #[test]

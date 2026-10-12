@@ -14,13 +14,13 @@
 
 mod common;
 
-use cachedb::cmd::{ERR_UNKNOWN_COMMAND, ERR_UNSUPPORTED_PROTOCOL_VERSION};
-use cachedb::proto::decode_frame;
-use cachedb::proto::encode::encode_frame;
-use cachedb::proto::header::{DEFAULT_MAX_PAYLOAD_LEN, FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
-use cachedb::proto::hello::{HelloRequest, HelloResponse};
-use cachedb::proto::{Decoded, Frame, Value};
 use common::{TestServer, XorShift64};
+use skiffdb::cmd::{ERR_UNKNOWN_COMMAND, ERR_UNSUPPORTED_PROTOCOL_VERSION};
+use skiffdb::proto::decode_frame;
+use skiffdb::proto::encode::encode_frame;
+use skiffdb::proto::header::{DEFAULT_MAX_PAYLOAD_LEN, FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
+use skiffdb::proto::hello::{HelloRequest, HelloResponse};
+use skiffdb::proto::{Decoded, Frame, Value};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -112,7 +112,7 @@ fn test_2_hello_negotiation() {
     assert_eq!(reply1.header.opcode, Opcode::Hello);
 
     let hello_resp = HelloResponse::from_value(&reply1.payload).expect("parse hello response");
-    assert_eq!(hello_resp.server_name, "cachedbd");
+    assert_eq!(hello_resp.server_name, "skiffd");
     assert_eq!(hello_resp.protocol_version, 1);
     assert!(hello_resp.client_id >= 1);
 

@@ -59,7 +59,7 @@ pub struct TestServer {
     addr: std::net::SocketAddr,
     shutdown_handle: std::sync::Arc<std::sync::atomic::AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<std::io::Result<()>>>,
-    stats: std::sync::Arc<cachedb::server::ServerStats>,
+    stats: std::sync::Arc<skiffdb::server::ServerStats>,
 }
 
 #[cfg(target_os = "linux")]
@@ -69,32 +69,32 @@ impl TestServer {
     #[must_use]
     pub fn start() -> Self {
         Self::start_with_engine_and_config(
-            cachedb::cmd::Engine::new(),
-            cachedb::server::ServerConfig::default(),
+            skiffdb::cmd::Engine::new(),
+            skiffdb::server::ServerConfig::default(),
         )
     }
 
     /// Starts a test server backed by a custom engine on an ephemeral localhost port.
     #[must_use]
-    pub fn start_with_engine(engine: cachedb::cmd::Engine) -> Self {
-        Self::start_with_engine_and_config(engine, cachedb::server::ServerConfig::default())
+    pub fn start_with_engine(engine: skiffdb::cmd::Engine) -> Self {
+        Self::start_with_engine_and_config(engine, skiffdb::server::ServerConfig::default())
     }
 
     /// Starts a test server backed by default engine with custom configuration.
     #[must_use]
-    pub fn start_with_config(config: cachedb::server::ServerConfig) -> Self {
-        Self::start_with_engine_and_config(cachedb::cmd::Engine::new(), config)
+    pub fn start_with_config(config: skiffdb::server::ServerConfig) -> Self {
+        Self::start_with_engine_and_config(skiffdb::cmd::Engine::new(), config)
     }
 
     /// Starts a test server backed by custom engine and configuration.
     #[must_use]
     pub fn start_with_engine_and_config(
-        engine: cachedb::cmd::Engine,
-        config: cachedb::server::ServerConfig,
+        engine: skiffdb::cmd::Engine,
+        config: skiffdb::server::ServerConfig,
     ) -> Self {
-        use cachedb::net::event_loop::EventLoop;
-        use cachedb::net::sys::{EpollFlags, as_raw_fd};
-        use cachedb::server::{LISTENER_TOKEN, Server};
+        use skiffdb::net::event_loop::EventLoop;
+        use skiffdb::net::sys::{EpollFlags, as_raw_fd};
+        use skiffdb::server::{LISTENER_TOKEN, Server};
         use std::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
@@ -127,7 +127,7 @@ impl TestServer {
 
     /// Returns a shared reference to the server telemetry counters.
     #[must_use]
-    pub fn stats(&self) -> std::sync::Arc<cachedb::server::ServerStats> {
+    pub fn stats(&self) -> std::sync::Arc<skiffdb::server::ServerStats> {
         std::sync::Arc::clone(&self.stats)
     }
 
@@ -178,17 +178,17 @@ impl Drop for TestServer {
 pub fn read_one_frame(
     stream: &mut std::net::TcpStream,
     acc: &mut Vec<u8>,
-) -> cachedb::proto::Frame {
+) -> skiffdb::proto::Frame {
     use std::io::Read;
     let mut buf = [0u8; 8192];
     loop {
         if !acc.is_empty() {
-            match cachedb::proto::decode_frame(acc) {
-                Ok(cachedb::proto::Decoded::Complete((frame, used))) => {
+            match skiffdb::proto::decode_frame(acc) {
+                Ok(skiffdb::proto::Decoded::Complete((frame, used))) => {
                     acc.drain(..used);
                     return frame;
                 }
-                Ok(cachedb::proto::Decoded::NeedMore) => {}
+                Ok(skiffdb::proto::Decoded::NeedMore) => {}
                 Err(e) => panic!(
                     "read_one_frame decode error: {e:?}, buffered bytes: {}",
                     acc.len()
@@ -224,11 +224,11 @@ pub fn raw_handshake(
     stream: &mut std::net::TcpStream,
     acc: &mut Vec<u8>,
     client_name: &str,
-) -> cachedb::proto::hello::HelloResponse {
-    use cachedb::proto::Frame;
-    use cachedb::proto::encode::encode_frame;
-    use cachedb::proto::header::{FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
-    use cachedb::proto::hello::{HelloRequest, HelloResponse};
+) -> skiffdb::proto::hello::HelloResponse {
+    use skiffdb::proto::Frame;
+    use skiffdb::proto::encode::encode_frame;
+    use skiffdb::proto::header::{FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
+    use skiffdb::proto::hello::{HelloRequest, HelloResponse};
     use std::io::Write;
 
     let req = HelloRequest::new(1, client_name.to_string(), None);
@@ -266,9 +266,9 @@ pub fn raw_handshake(
 ///
 /// Panics if RESPONSE flag is unset, ERROR flag is set, request_id differs, or payload is `Value::Error`.
 #[allow(dead_code)]
-pub fn expect_ok_reply(frame: &cachedb::proto::Frame, expected_request_id: u32) {
-    use cachedb::proto::Value;
-    use cachedb::proto::header::{FLAG_ERROR, FLAG_RESPONSE};
+pub fn expect_ok_reply(frame: &skiffdb::proto::Frame, expected_request_id: u32) {
+    use skiffdb::proto::Value;
+    use skiffdb::proto::header::{FLAG_ERROR, FLAG_RESPONSE};
 
     assert!(
         frame.header.flags & FLAG_RESPONSE != 0,
@@ -298,16 +298,16 @@ pub struct TestBlockingServer {
 
 #[allow(dead_code)]
 impl TestBlockingServer {
-    /// Starts a test server backed by a fresh default [`cachedb::cmd::Engine`].
+    /// Starts a test server backed by a fresh default [`skiffdb::cmd::Engine`].
     pub fn start() -> Self {
         Self::start_with_engine(std::sync::Arc::new(std::sync::Mutex::new(
-            cachedb::cmd::Engine::new(),
+            skiffdb::cmd::Engine::new(),
         )))
     }
 
-    /// Starts a test server backed by a shared [`cachedb::cmd::Engine`].
+    /// Starts a test server backed by a shared [`skiffdb::cmd::Engine`].
     pub fn start_with_engine(
-        engine: std::sync::Arc<std::sync::Mutex<cachedb::cmd::Engine>>,
+        engine: std::sync::Arc<std::sync::Mutex<skiffdb::cmd::Engine>>,
     ) -> Self {
         use std::net::TcpListener;
         use std::sync::atomic::Ordering;
@@ -360,13 +360,13 @@ impl TestBlockingServer {
 
     fn handle_client(
         mut stream: std::net::TcpStream,
-        engine: &std::sync::Arc<std::sync::Mutex<cachedb::cmd::Engine>>,
+        engine: &std::sync::Arc<std::sync::Mutex<skiffdb::cmd::Engine>>,
     ) {
-        use cachedb::cmd::dispatch::Session;
-        use cachedb::cmd::request::handle_request;
-        use cachedb::proto::Decoded;
-        use cachedb::proto::decode::decode_frame;
-        use cachedb::proto::encode::encode_frame;
+        use skiffdb::cmd::dispatch::Session;
+        use skiffdb::cmd::request::handle_request;
+        use skiffdb::proto::Decoded;
+        use skiffdb::proto::decode::decode_frame;
+        use skiffdb::proto::encode::encode_frame;
         use std::io::{Read, Write};
         use std::time::Duration;
 

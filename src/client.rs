@@ -1,4 +1,4 @@
-//! Synchronous client library for Cachedb.
+//! Synchronous client library for SkiffDB.
 //!
 //! Provides a zero-dependency, blocking client backed by [`std::net::TcpStream`] that
 //! works identically across Linux and Windows.
@@ -6,8 +6,8 @@
 //! # Examples
 //!
 //! ```no_run
-//! use cachedb::client::Client;
-//! use cachedb::proto::Value;
+//! use skiffdb::client::Client;
+//! use skiffdb::proto::Value;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut client = Client::connect("127.0.0.1:4222")?;
@@ -60,7 +60,7 @@ impl Default for ClientConfig {
             connect_timeout: None,
             read_timeout: None,
             write_timeout: None,
-            client_name: format!("cachedb-client/{}", env!("CARGO_PKG_VERSION")),
+            client_name: format!("skiff-client/{}", env!("CARGO_PKG_VERSION")),
             max_reply_size: DEFAULT_MAX_PAYLOAD_LEN as usize,
         }
     }
@@ -112,7 +112,7 @@ impl ClientConfig {
 /// Metadata and limits negotiated with the server during handshake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerInfo {
-    /// Server implementation name (e.g. `"cachedbd"`).
+    /// Server implementation name (e.g. `"skiffd"`).
     pub server_name: String,
     /// Server software version (e.g. `"0.1.0"`).
     pub server_version: String,
@@ -327,7 +327,7 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::Client;
+    /// use skiffdb::client::Client;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let client = Client::connect("127.0.0.1:4222")?;
@@ -348,7 +348,7 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::{Client, ClientConfig};
+    /// use skiffdb::client::{Client, ClientConfig};
     /// use std::time::Duration;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -473,8 +473,8 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::Client;
-    /// use cachedb::proto::Value;
+    /// use skiffdb::client::Client;
+    /// use skiffdb::proto::Value;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut client = Client::connect("127.0.0.1:4222")?;
@@ -566,8 +566,8 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::Client;
-    /// use cachedb::proto::Value;
+    /// use skiffdb::client::Client;
+    /// use skiffdb::proto::Value;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut client = Client::connect("127.0.0.1:4222")?;
@@ -663,7 +663,7 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::Client;
+    /// use skiffdb::client::Client;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut client = Client::connect("127.0.0.1:4222")?;
@@ -694,8 +694,8 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::Client;
-    /// use cachedb::proto::Value;
+    /// use skiffdb::client::Client;
+    /// use skiffdb::proto::Value;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut client = Client::connect("127.0.0.1:4222")?;
@@ -727,8 +727,8 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::Client;
-    /// use cachedb::proto::Value;
+    /// use skiffdb::client::Client;
+    /// use skiffdb::proto::Value;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut client = Client::connect("127.0.0.1:4222")?;
@@ -761,8 +761,8 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::Client;
-    /// use cachedb::proto::Value;
+    /// use skiffdb::client::Client;
+    /// use skiffdb::proto::Value;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut client = Client::connect("127.0.0.1:4222")?;
@@ -800,7 +800,7 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::Client;
+    /// use skiffdb::client::Client;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut client = Client::connect("127.0.0.1:4222")?;
@@ -830,7 +830,7 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::Client;
+    /// use skiffdb::client::Client;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut client = Client::connect("127.0.0.1:4222")?;
@@ -866,7 +866,7 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::Client;
+    /// use skiffdb::client::Client;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut client = Client::connect("127.0.0.1:4222")?;
@@ -895,7 +895,7 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::Client;
+    /// use skiffdb::client::Client;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut client = Client::connect("127.0.0.1:4222")?;
@@ -923,7 +923,7 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::Client;
+    /// use skiffdb::client::Client;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut client = Client::connect("127.0.0.1:4222")?;
@@ -958,7 +958,7 @@ impl Client {
     /// # Examples
     ///
     /// ```no_run
-    /// use cachedb::client::Client;
+    /// use skiffdb::client::Client;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let client = Client::connect("127.0.0.1:4222")?;

@@ -1,4 +1,4 @@
-//! Scale, stress, and soak tests for cachedb connection architecture.
+//! Scale, stress, and soak tests for SkiffDB connection architecture.
 //!
 //! Validates memory footprint, O(1) token lookup, and fast idle sweep performance
 //! when managing 10,000 concurrent idle connections.
@@ -12,7 +12,7 @@
     clippy::unchecked_time_subtraction
 )]
 
-use cachedb::net::connection::{Connection, ConnectionTable};
+use skiffdb::net::connection::{Connection, ConnectionTable};
 use std::io::{self, Cursor, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::thread;
@@ -335,7 +335,7 @@ fn test_ten_thousand_real_tcp_idle_connections() -> Result<(), Box<dyn std::erro
 }
 
 #[cfg(target_os = "linux")]
-const LISTENER_TOKEN: cachedb::net::event_loop::Token = 0;
+const LISTENER_TOKEN: skiffdb::net::event_loop::Token = 0;
 
 #[cfg(target_os = "linux")]
 struct SoakEchoHandler {
@@ -345,7 +345,7 @@ struct SoakEchoHandler {
 
 #[cfg(target_os = "linux")]
 impl SoakEchoHandler {
-    fn handle_accept(&mut self, event_loop: &mut cachedb::net::event_loop::EventLoop) {
+    fn handle_accept(&mut self, event_loop: &mut skiffdb::net::event_loop::EventLoop) {
         loop {
             match self.listener.accept() {
                 Ok((stream, peer_addr)) => {
@@ -379,8 +379,8 @@ impl SoakEchoHandler {
 
     fn handle_client_read(
         &mut self,
-        token: cachedb::net::event_loop::Token,
-        event_loop: &mut cachedb::net::event_loop::EventLoop,
+        token: skiffdb::net::event_loop::Token,
+        event_loop: &mut skiffdb::net::event_loop::EventLoop,
     ) -> bool {
         let Some(conn) = self.connections.get_mut(token) else {
             return false;
@@ -388,7 +388,7 @@ impl SoakEchoHandler {
 
         loop {
             match conn.read_incoming() {
-                Ok(cachedb::net::connection::ReadStatus::Eof) => {
+                Ok(skiffdb::net::connection::ReadStatus::Eof) => {
                     if conn.write_queue().is_empty() {
                         self.connections.remove_and_deregister(token, event_loop);
                         return false;
@@ -396,8 +396,8 @@ impl SoakEchoHandler {
                     let _ = self.connections.sync_interest(token, event_loop);
                     return self.handle_client_write(token, event_loop);
                 }
-                Ok(cachedb::net::connection::ReadStatus::WouldBlock) => break,
-                Ok(cachedb::net::connection::ReadStatus::Ok(n)) => {
+                Ok(skiffdb::net::connection::ReadStatus::WouldBlock) => break,
+                Ok(skiffdb::net::connection::ReadStatus::Ok(n)) => {
                     let data = conn.read_buffer().data().to_vec();
                     if let Err(err) = conn.send_chunk(data) {
                         eprintln!("Failed to enqueue echo payload for client {token}: {err}");
@@ -419,21 +419,21 @@ impl SoakEchoHandler {
 
     fn handle_client_write(
         &mut self,
-        token: cachedb::net::event_loop::Token,
-        event_loop: &mut cachedb::net::event_loop::EventLoop,
+        token: skiffdb::net::event_loop::Token,
+        event_loop: &mut skiffdb::net::event_loop::EventLoop,
     ) -> bool {
         let Some(conn) = self.connections.get_mut(token) else {
             return false;
         };
 
         match conn.flush_outgoing() {
-            Ok(cachedb::net::connection::WriteStatus::Complete) => {
+            Ok(skiffdb::net::connection::WriteStatus::Complete) => {
                 if conn.is_closed() {
                     self.connections.remove_and_deregister(token, event_loop);
                     return false;
                 }
             }
-            Ok(cachedb::net::connection::WriteStatus::Pending(_)) => {}
+            Ok(skiffdb::net::connection::WriteStatus::Pending(_)) => {}
             Err(err) => {
                 eprintln!("I/O write error on client {token}: {err}");
                 self.connections.remove_and_deregister(token, event_loop);
@@ -447,27 +447,27 @@ impl SoakEchoHandler {
 }
 
 #[cfg(target_os = "linux")]
-impl cachedb::net::event_loop::Handler for SoakEchoHandler {
+impl skiffdb::net::event_loop::Handler for SoakEchoHandler {
     fn on_event(
         &mut self,
-        event_loop: &mut cachedb::net::event_loop::EventLoop,
-        token: cachedb::net::event_loop::Token,
-        flags: cachedb::net::sys::EpollFlags,
+        event_loop: &mut skiffdb::net::event_loop::EventLoop,
+        token: skiffdb::net::event_loop::Token,
+        flags: skiffdb::net::sys::EpollFlags,
     ) -> io::Result<()> {
         if token == LISTENER_TOKEN {
             self.handle_accept(event_loop);
         } else {
-            let mut conn_alive = if flags.contains(cachedb::net::sys::EpollFlags::READABLE) {
+            let mut conn_alive = if flags.contains(skiffdb::net::sys::EpollFlags::READABLE) {
                 self.handle_client_read(token, event_loop)
             } else {
                 true
             };
-            if conn_alive && flags.contains(cachedb::net::sys::EpollFlags::WRITABLE) {
+            if conn_alive && flags.contains(skiffdb::net::sys::EpollFlags::WRITABLE) {
                 conn_alive = self.handle_client_write(token, event_loop);
             }
             if conn_alive
-                && (flags.contains(cachedb::net::sys::EpollFlags::HANGUP)
-                    || flags.contains(cachedb::net::sys::EpollFlags::ERROR))
+                && (flags.contains(skiffdb::net::sys::EpollFlags::HANGUP)
+                    || flags.contains(skiffdb::net::sys::EpollFlags::ERROR))
             {
                 self.connections.remove_and_deregister(token, event_loop);
             }
@@ -512,15 +512,15 @@ fn test_ten_thousand_real_tcp_event_loop_idle_connections() -> Result<(), Box<dy
         );
     };
 
-    let mut event_loop = cachedb::net::event_loop::EventLoop::new()?;
+    let mut event_loop = skiffdb::net::event_loop::EventLoop::new()?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
     let addr = listener.local_addr()?;
 
     event_loop.register(
-        cachedb::net::sys::as_raw_fd(&listener),
+        skiffdb::net::sys::as_raw_fd(&listener),
         LISTENER_TOKEN,
-        cachedb::net::sys::EpollFlags::READABLE,
+        skiffdb::net::sys::EpollFlags::READABLE,
     )?;
 
     let connections = ConnectionTable::<TcpStream>::with_max_connections(TARGET_CONNECTIONS);

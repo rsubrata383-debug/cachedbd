@@ -2,15 +2,15 @@
 
 mod common;
 
-use cachedb::cmd::{
+use common::XorShift64;
+use skiffdb::cmd::{
     CmdConfig, ERR_AUTH_REQUIRED, ERR_EMPTY_KEY, ERR_INTEGER_OVERFLOW, ERR_INVALID_ARGUMENT,
     ERR_KEY_TOO_LARGE, ERR_NOT_AN_INTEGER, ERR_OUT_OF_MEMORY, ERR_READONLY_REPLICA,
     ERR_SYNTAX_ERROR, ERR_TOO_MANY_ARGS, ERR_UNKNOWN_COMMAND, ERR_VALUE_TOO_LARGE,
     ERR_WRONG_ARG_COUNT, ERR_WRONG_TYPE, Engine, Session, parse_strict_i64,
 };
-use cachedb::proto::Value;
-use cachedb::store::{PutCondition, RobinHoodTable, Store};
-use common::XorShift64;
+use skiffdb::proto::Value;
+use skiffdb::store::{PutCondition, RobinHoodTable, Store};
 use std::collections::HashMap;
 
 #[test]

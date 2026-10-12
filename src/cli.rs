@@ -1,4 +1,4 @@
-//! Command-line interface and parsing utilities for `cachedb-cli`.
+//! Command-line interface and parsing utilities for `skiff-cli`.
 
 use std::fmt;
 use std::io::{BufRead, Write};
@@ -6,11 +6,11 @@ use std::io::{BufRead, Write};
 use crate::client::{Client, ClientError};
 use crate::proto::Value;
 
-/// Standard help message displayed for `cachedb-cli --help` or the `help` builtin.
+/// Standard help message displayed for `skiff-cli --help` or the `help` builtin.
 pub const HELP_TEXT: &str = "\
-cachedb-cli [OPTIONS] [COMMAND [ARGS...]]
+skiff-cli [OPTIONS] [COMMAND [ARGS...]]
 
-A command-line interface for cachedb.
+A command-line interface for SkiffDB.
 
 Options:
   --host <addr>    Server host address (default: 127.0.0.1)
@@ -68,7 +68,7 @@ impl fmt::Display for CliError {
 
 impl std::error::Error for CliError {}
 
-/// Configuration options for invoking the `cachedb-cli` utility.
+/// Configuration options for invoking the `skiff-cli` utility.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliConfig {
     /// Host address to connect to (default: "127.0.0.1").
@@ -616,7 +616,7 @@ fn run_repl<R: BufRead, W: Write, E: Write>(
 
     loop {
         if is_terminal {
-            let _ = write!(stdout, "cachedb> ");
+            let _ = write!(stdout, "skiff> ");
             let _ = stdout.flush();
         }
 
