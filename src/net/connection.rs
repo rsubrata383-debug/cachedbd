@@ -48,6 +48,7 @@ pub struct Connection<S = TcpStream> {
     write_queue: WriteQueue,
     is_closing: bool,
     is_closed: bool,
+    read_eof: bool,
     last_active: Instant,
 }
 
@@ -81,6 +82,7 @@ impl<S> Connection<S> {
             write_queue: WriteQueue::with_high_watermark(write_high_watermark),
             is_closing: false,
             is_closed: false,
+            read_eof: false,
             last_active: Instant::now(),
         }
     }
@@ -108,6 +110,7 @@ impl<S> Connection<S> {
             ),
             is_closing: false,
             is_closed: false,
+            read_eof: false,
             last_active: Instant::now(),
         }
     }
@@ -215,9 +218,20 @@ impl<S> Connection<S> {
         }
     }
 
+    /// Returns `true` if EOF has been received on the inbound read stream.
+    #[must_use]
+    pub fn is_read_eof(&self) -> bool {
+        self.read_eof
+    }
+
+    /// Marks that EOF has been received on the inbound read stream.
+    pub fn set_read_eof(&mut self) {
+        self.read_eof = true;
+    }
+
     /// Computes the desired [`EpollFlags`] interest for this connection.
     ///
-    /// - Excludes `READABLE` if the connection is closing, closed, or backpressured.
+    /// - Excludes `READABLE` if the connection is closing, closed, backpressured, or EOF was seen.
     /// - Includes `READABLE` during normal operation.
     /// - Includes `WRITABLE` whenever the write queue has pending data.
     #[must_use]
@@ -228,8 +242,8 @@ impl<S> Connection<S> {
 
         let mut flags = EpollFlags::empty();
 
-        // Read interest: only when not closing and not under backpressure.
-        if !self.is_closing && !self.write_queue.is_backpressured() {
+        // Read interest: only when not closing, not under backpressure, and read EOF not seen.
+        if !self.is_closing && !self.write_queue.is_backpressured() && !self.read_eof {
             flags |= EpollFlags::READABLE;
         }
 
@@ -256,21 +270,14 @@ impl<S: Read> Connection<S> {
     /// Returns an [`io::Error`] if an unexpected I/O error occurs or the read buffer
     /// capacity exceeds the maximum limit.
     pub fn read_incoming(&mut self) -> io::Result<ReadStatus> {
-        if self.is_closing || self.is_closed {
+        if self.is_closing || self.is_closed || self.read_eof {
             return Ok(ReadStatus::Eof);
         }
 
         loop {
             match self.read_buf.read_from(&mut self.stream) {
                 Ok(0) => {
-                    // Clean EOF from remote peer.
-                    // If output bytes remain in the write queue, mark closing so they can flush.
-                    // If write queue is empty, close immediately.
-                    if self.write_queue.is_empty() {
-                        self.is_closed = true;
-                    } else {
-                        self.is_closing = true;
-                    }
+                    self.read_eof = true;
                     return Ok(ReadStatus::Eof);
                 }
                 Ok(n) => {
@@ -1087,6 +1094,34 @@ mod tests {
             past,
             "flush returning WouldBlock MUST NOT refresh last_active timestamp"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_connection_read_eof_drops_readable_interest() -> io::Result<()> {
+        let addr: SocketAddr = "127.0.0.1:8081".parse().expect("valid address");
+        // MockSocket with empty incoming will return Ok(0) on first read (EOF)
+        let socket = MockSocket::new(Vec::new());
+        let mut conn = Connection::new(1, socket, addr);
+
+        assert!(!conn.is_read_eof());
+        assert_eq!(conn.desired_flags(), EpollFlags::READABLE);
+
+        let status = conn.read_incoming()?;
+        assert_eq!(status, ReadStatus::Eof);
+        assert!(conn.is_read_eof());
+        // Since write queue is empty and read EOF is true, READABLE is dropped
+        assert_eq!(conn.desired_flags(), EpollFlags::empty());
+
+        // Subsequent reads return Eof immediately without touching stream
+        let status2 = conn.read_incoming()?;
+        assert_eq!(status2, ReadStatus::Eof);
+
+        // If writes are queued, WRITABLE is desired, but never READABLE
+        conn.send_slice(b"reply bytes")?;
+        assert_eq!(conn.desired_flags(), EpollFlags::WRITABLE);
+        assert!(!conn.desired_flags().contains(EpollFlags::READABLE));
 
         Ok(())
     }

@@ -9,7 +9,7 @@ use crate::proto::decode_frame;
 use crate::proto::encode::encode_frame;
 use crate::proto::header::{FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
 use crate::proto::{Decoded, Frame, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -54,6 +54,8 @@ impl Default for ServerConfig {
 pub struct ServerStats {
     /// Total number of accepted client connections.
     pub connections_accepted: AtomicU64,
+    /// Total number of client connections closed and removed for any reason.
+    pub connections_closed: AtomicU64,
     /// Total number of connections terminated due to inactivity exceeding the idle timeout.
     pub connections_closed_idle: AtomicU64,
     /// Total number of times client connections transitioned into backpressure pause.
@@ -86,6 +88,7 @@ pub struct Server {
     last_capacity: usize,
     last_len: usize,
     pending_work: VecDeque<Token>,
+    pending_work_set: HashSet<Token>,
     timer_scheduled: bool,
 }
 
@@ -146,6 +149,7 @@ impl Server {
             last_capacity: initial_cap,
             last_len: initial_len,
             pending_work: VecDeque::new(),
+            pending_work_set: HashSet::new(),
             timer_scheduled: false,
         })
     }
@@ -384,6 +388,10 @@ impl Server {
         }
     }
 
+    fn has_complete_frame(data: &[u8]) -> bool {
+        matches!(decode_frame(data), Ok(Decoded::Complete(_)))
+    }
+
     /// Reads incoming bytes from a client socket and processes frames via pipelining.
     ///
     /// Respects fairness limits ([`ServerConfig::max_read_bytes_per_event`] and
@@ -393,18 +401,13 @@ impl Server {
             return false;
         };
 
-        let mut read_done = false;
         let mut total_bytes_read = 0;
         loop {
             if total_bytes_read >= self.config.max_read_bytes_per_event {
                 break;
             }
             match conn.read_incoming() {
-                Ok(ReadStatus::Eof) => {
-                    read_done = true;
-                    break;
-                }
-                Ok(ReadStatus::WouldBlock) => break,
+                Ok(ReadStatus::Eof | ReadStatus::WouldBlock) => break,
                 Ok(ReadStatus::Ok(n)) => {
                     total_bytes_read += n;
                 }
@@ -468,26 +471,42 @@ impl Server {
             conn.close();
         }
 
-        if read_done && conn.write_queue().is_empty() {
-            self.remove_client(token, event_loop);
-            return false;
-        }
+        // Always sync interest after reading/decoding so changes to backpressure,
+        // closing state, or read_eof are immediately reflected in epoll flags:
+        let _ = self.connections.sync_interest(token, event_loop);
 
         let write_ok = self.handle_client_write(token, event_loop);
         if !write_ok {
             return false;
         }
 
+        let Some(conn) = self.connections.get(token) else {
+            return false;
+        };
+
+        let has_more_frames = Self::has_complete_frame(conn.read_buffer().data());
+
+        // Half-close and close completion check:
+        // Connection is removed only when:
+        // (a) EOF was seen (or conn is closing)
+        // (b) No complete frame remains in read buffer (leftover partial bytes dropped)
+        // (c) Write queue is empty (flushed)
+        if (conn.is_read_eof() || conn.is_closing())
+            && !has_more_frames
+            && conn.write_queue().is_empty()
+        {
+            self.remove_client(token, event_loop);
+            return false;
+        }
+
         // Schedule remaining unconsumed data in pending_work for subsequent loop tick:
-        if let Some(conn) = self.connections.get(token) {
-            if !conn.is_backpressured()
-                && !conn.is_closing()
-                && !conn.is_closed()
-                && !conn.read_buffer().is_empty()
-                && !self.pending_work.contains(&token)
-            {
-                self.pending_work.push_back(token);
-            }
+        if !conn.is_backpressured()
+            && !conn.is_closing()
+            && !conn.is_closed()
+            && has_more_frames
+            && self.pending_work_set.insert(token)
+        {
+            self.pending_work.push_back(token);
         }
 
         true
@@ -515,17 +534,30 @@ impl Server {
 
         let _ = self.connections.sync_interest(token, event_loop);
 
-        // If backpressure was cleared and unconsumed data exists in read buffer,
+        let Some(conn) = self.connections.get(token) else {
+            return false;
+        };
+
+        let has_more_frames = Self::has_complete_frame(conn.read_buffer().data());
+
+        // Half-close and close completion check:
+        if (conn.is_read_eof() || conn.is_closing())
+            && !has_more_frames
+            && conn.write_queue().is_empty()
+        {
+            self.remove_client(token, event_loop);
+            return false;
+        }
+
+        // If backpressure was cleared and complete frames exist in read buffer,
         // enqueue for processing in next tick:
-        if let Some(conn) = self.connections.get(token) {
-            if !conn.is_backpressured()
-                && !conn.is_closing()
-                && !conn.is_closed()
-                && !conn.read_buffer().is_empty()
-                && !self.pending_work.contains(&token)
-            {
-                self.pending_work.push_back(token);
-            }
+        if !conn.is_backpressured()
+            && !conn.is_closing()
+            && !conn.is_closed()
+            && has_more_frames
+            && self.pending_work_set.insert(token)
+        {
+            self.pending_work.push_back(token);
         }
 
         true
@@ -533,9 +565,13 @@ impl Server {
 
     /// Removes a client connection, deregisters it from epoll, and drops its session.
     pub fn remove_client(&mut self, token: Token, event_loop: &mut EventLoop) {
+        self.stats
+            .connections_closed
+            .fetch_add(1, Ordering::Relaxed);
         self.connections.remove_and_deregister(token, event_loop);
         self.sessions.remove(&token);
         self.pending_work.retain(|&t| t != token);
+        self.pending_work_set.remove(&token);
     }
 
     /// Sweeps active connections and terminates any exceeding [`ServerConfig::idle_timeout`].
@@ -617,6 +653,7 @@ impl Handler for Server {
         let count = self.pending_work.len();
         for _ in 0..count {
             if let Some(token) = self.pending_work.pop_front() {
+                self.pending_work_set.remove(&token);
                 if self.connections.get(token).is_some() {
                     self.handle_client_read(token, event_loop);
                 }

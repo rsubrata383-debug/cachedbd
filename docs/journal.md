@@ -1635,3 +1635,18 @@ We formalized the exact coercion and error mapping as follows:
 9. **Telemetry**: Introduced `ServerStats` with relaxed atomic counters for connections, backpressure pauses, peak queue sizes, and processed frames.
 10. **Testing**: Implemented Linux hardening E2E suite covering slow readers, isolation, fairness, idle sweeps, and abrupt disconnects.
 
+---
+
+## 2026-10-12: Week 8 Step 4 — Linux Hardening Post-Review, Half-Close Fix & Big-Reply Backpressure
+
+1. **Root Cause Analysis (Tests Never Ran on Windows)**: Tests marked `#[cfg(target_os = "linux")]` were skipped on local Windows builds; real execution in Linux GitHub Actions CI revealed 3 backpressure test failures and half-close edge cases.
+2. **Backpressure Buffer Sizing (Ping Replies Too Small)**: Ping responses (~20 B) are completely absorbed by modern OS kernel socket buffers (128 KiB–2 MiB), preventing server write queues from ever exceeding 64 KiB backpressure watermarks.
+3. **Big-Reply Testing**: Fixed tests by putting 256 KiB byte patterns (`put bigkey <pattern>`) followed by pipelined `fetch bigkey` requests (~75 MB total), reliably filling kernel socket buffers and deterministically triggering user-space backpressure.
+4. **Half-Close Premature Disconnect Bug**: In `handle_client_read`, observing EOF on socket reads with an empty write queue previously removed connections immediately, losing completed frames still buffered in `ReadBuffer`.
+5. **Connection Half-Close State (`read_eof`)**: Added `read_eof: bool` to `Connection`. When a client half-closes via `shutdown(Write)`, `read_eof` is set and `desired_flags()` immediately drops `READABLE` to prevent level-triggered epoll busy-spinning.
+6. **Triple-Condition Removal**: Connections are now removed only when (a) EOF was seen, (b) no complete frame remains in `ReadBuffer` (`!has_complete_frame`), and (c) `WriteQueue` has been fully flushed (`write_queue.is_empty()`).
+7. **O(1) Work Scheduling**: Replaced $O(n)$ `pending_work.contains(&token)` lookups with an $O(1)$ `pending_work_set: HashSet<Token>` tracking queue membership.
+8. **Telemetry Extension**: Added `ServerStats.connections_closed` (`AtomicU64`) tracking all terminated connections, verified within 2s on disconnect.
+9. **Thread Safety & Clean Teardown**: Updated all test writer threads to set write timeouts and explicitly join at test completion.
+10. **Half-Close E2E Test Suite**: Added 4 Linux tests covering pipelined pings with half-close, big fetches with backpressure and half-close, partial frame drops, and single-shot request half-closes.
+

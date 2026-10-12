@@ -109,3 +109,23 @@
 - `schedule_initial_timers(&mut event_loop)` MUST be called before starting `event_loop.run(&mut server)` (and is also guarded upon first accept), ensuring the first client is monitored even if no subsequent accept events occur.
 - Connections idle longer than `idle_timeout` are closed and removed, incrementing `ServerStats.connections_closed_idle`.
 
+### Half-Close Rule & Level-Triggered Epoll Handling
+- When a client issues a TCP half-close (`shutdown(Shutdown::Write)`), the kernel signals `EPOLLIN` / `READABLE`. `Connection::read_incoming()` detects `0` bytes read and sets `Connection.read_eof = true`.
+- To prevent 100% CPU busy-spinning in level-triggered epoll, `desired_flags()` immediately drops `READABLE` interest once `read_eof` is set.
+- Completed frames already buffered in the connection's user-space `ReadBuffer` continue to be processed across subsequent event loop ticks (`pending_work`).
+- The connection is closed and removed if and only if all three conditions hold:
+  1. EOF was seen on the read half (`read_eof` is true).
+  2. No complete frame remains in the user-space read buffer (`has_complete_frame` is false; leftover partial frames are dropped).
+  3. The outbound `WriteQueue` has been fully flushed (`write_queue.is_empty()`).
+
+### Big-Reply Test Methodology & Kernel Socket Buffers
+- Kernel TCP socket buffers (typically 128 KiB to 2 MiB on modern Linux kernels) easily absorb thousands of tiny ping responses (~20 bytes each), allowing the server's user-space write queue to drain completely without ever reaching user-space backpressure thresholds.
+- To rigorously test user-space backpressure and watermark hysteresis, tests use the "big-reply" methodology:
+  1. Store a large payload (e.g. 256 KiB byte pattern via `put bigkey <pattern>`).
+  2. Pipeline multiple `fetch bigkey` requests (e.g. 300 fetches $\approx$ 75 MB of replies) without reading immediately.
+  3. The large responses rapidly saturate OS kernel socket buffers, forcing replies to accumulate in the server's `WriteQueue` and deterministically triggering user-space backpressure pauses (`backpressure_pauses >= 1`).
+  4. The client then reads all responses in order, verifying request IDs and payloads, and joins background sender threads.
+
+### Telemetry Counters & `connections_closed`
+- `ServerStats.connections_closed`: Monotonically increasing `AtomicU64` counter incremented whenever a client connection is terminated and removed from the server for any reason (clean client quit, EOF completion, protocol error, disconnect, or idle sweep).
+
