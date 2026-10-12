@@ -17,8 +17,13 @@ use crate::store::PutCondition;
 /// - [`ERR_INVALID_ARGUMENT`] (2003) if condition is supplied but is not lowercase `Text("nx")` or `Text("xx")`.
 /// - [`ERR_OUT_OF_MEMORY`] (4003) if the underlying store reaches maximum capacity.
 pub fn handle_put(ctx: &mut Context<'_>, args: &[Value]) -> Result<Value, CmdError> {
-    let key = key_arg_with_limit(&args[0], ctx.config.max_key_size)?;
-    let val = &args[1];
+    let Some(key_item) = args.first() else {
+        return Err(crate::cmd::ERR_INTERNAL_ERROR);
+    };
+    let Some(val) = args.get(1) else {
+        return Err(crate::cmd::ERR_INTERNAL_ERROR);
+    };
+    let key = key_arg_with_limit(key_item, ctx.config.max_key_size)?;
 
     if matches!(val, Value::Error { .. }) {
         return Err(ERR_INVALID_ARGUMENT);
@@ -30,9 +35,9 @@ pub fn handle_put(ctx: &mut Context<'_>, args: &[Value]) -> Result<Value, CmdErr
     }
 
     let condition = if args.len() == 3 {
-        match &args[2] {
-            Value::Text(s) if s == "nx" => PutCondition::OnlyIfAbsent,
-            Value::Text(s) if s == "xx" => PutCondition::OnlyIfPresent,
+        match args.get(2) {
+            Some(Value::Text(s)) if s == "nx" => PutCondition::OnlyIfAbsent,
+            Some(Value::Text(s)) if s == "xx" => PutCondition::OnlyIfPresent,
             _ => return Err(ERR_INVALID_ARGUMENT),
         }
     } else {

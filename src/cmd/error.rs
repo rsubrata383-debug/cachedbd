@@ -44,6 +44,23 @@ impl fmt::Display for CmdError {
 
 impl std::error::Error for CmdError {}
 
+// 1000–1999: Protocol and Framing Errors (Fatal, connection closed)
+/// 1001: Client sends unsupported version in HELLO.
+pub const ERR_UNSUPPORTED_PROTOCOL_VERSION: CmdError =
+    CmdError::new(1001, "unsupported protocol version", true);
+/// 1002: Client sets reserved or unsupported flag bit.
+pub const ERR_UNSUPPORTED_FLAG: CmdError = CmdError::new(1002, "unsupported flag", true);
+/// 1003: Frame payload exceeds maximum permitted size.
+pub const ERR_FRAME_TOO_LARGE: CmdError = CmdError::new(1003, "frame exceeds maximum size", true);
+/// 1004: Header does not begin with `0xCA 0xDB`.
+pub const ERR_INVALID_MAGIC: CmdError = CmdError::new(1004, "invalid protocol magic header", true);
+/// 1005: Varint continuation exceeds 10 bytes or stream terminates early.
+pub const ERR_MALFORMED_VARINT: CmdError = CmdError::new(1005, "malformed varint encoding", true);
+/// 1006: Payload byte stream ends before declared item length.
+pub const ERR_MALFORMED_PAYLOAD: CmdError = CmdError::new(1006, "payload decoding failed", true);
+/// 1007: Payload contains unrecognized type tag byte without length prefix.
+pub const ERR_UNKNOWN_TYPE_TAG: CmdError = CmdError::new(1007, "unknown type tag", true);
+
 // 2000–2999: Command Syntax and Argument Errors
 /// 2001: Command verb does not exist.
 pub const ERR_UNKNOWN_COMMAND: CmdError = CmdError::new(2001, "unknown command", false);
@@ -103,6 +120,16 @@ mod tests {
         let spec_text = include_str!("../../docs/spec/errors.md");
 
         let all_errors: &[(&str, CmdError)] = &[
+            (
+                "ERR_UNSUPPORTED_PROTOCOL_VERSION",
+                ERR_UNSUPPORTED_PROTOCOL_VERSION,
+            ),
+            ("ERR_UNSUPPORTED_FLAG", ERR_UNSUPPORTED_FLAG),
+            ("ERR_FRAME_TOO_LARGE", ERR_FRAME_TOO_LARGE),
+            ("ERR_INVALID_MAGIC", ERR_INVALID_MAGIC),
+            ("ERR_MALFORMED_VARINT", ERR_MALFORMED_VARINT),
+            ("ERR_MALFORMED_PAYLOAD", ERR_MALFORMED_PAYLOAD),
+            ("ERR_UNKNOWN_TYPE_TAG", ERR_UNKNOWN_TYPE_TAG),
             ("ERR_UNKNOWN_COMMAND", ERR_UNKNOWN_COMMAND),
             ("ERR_WRONG_ARG_COUNT", ERR_WRONG_ARG_COUNT),
             ("ERR_INVALID_ARGUMENT", ERR_INVALID_ARGUMENT),

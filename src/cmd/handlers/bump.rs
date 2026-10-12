@@ -72,11 +72,14 @@ pub fn parse_strict_i64(bytes: &[u8]) -> Option<i64> {
 /// - [`crate::cmd::ERR_WRONG_TYPE`] (3001): Stored value is Array or Map collection.
 /// - [`crate::cmd::ERR_OUT_OF_MEMORY`] (4003): Table reached maximum capacity when inserting missing key.
 pub fn handle_bump(ctx: &mut Context<'_>, args: &[Value]) -> Result<Value, CmdError> {
-    let key = key_arg_with_limit(&args[0], ctx.config.max_key_size)?;
+    let Some(key_item) = args.first() else {
+        return Err(crate::cmd::ERR_INTERNAL_ERROR);
+    };
+    let key = key_arg_with_limit(key_item, ctx.config.max_key_size)?;
 
     let step = if args.len() > 1 {
-        match &args[1] {
-            Value::Int(s) => *s,
+        match args.get(1) {
+            Some(Value::Int(s)) => *s,
             _ => return Err(ERR_INVALID_ARGUMENT),
         }
     } else {

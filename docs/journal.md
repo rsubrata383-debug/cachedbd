@@ -1452,3 +1452,41 @@ We formalized the exact coercion and error mapping as follows:
    - Fields `store` and `config` are made private, with accessor methods `store()`, `store_mut()`, `config()`, and `config_mut()`. Existing integration tests have been transitioned to these accessors.
 4. **Spec-Driven Error Constants Verification**:
    - Replaced hand-typed expected constant lists with direct compile-time inspection of `docs/spec/errors.md` via `include_str!`, dynamically validating codes, names, messages, and close flags.
+
+---
+
+## 2026-10-12: Week 7, Step 3 - Network & Command Layer Integration
+
+- **Date**: 2026-10-12
+- **Scope**: Connecting command dispatch (`src/cmd/`, `Engine`) to the networking layer (`src/net/`, `src/proto/`), introducing `Server` handler, tick hooks, `hello` and `quit` lifecycle commands, and CLI entry point in `src/main.rs`.
+
+### 1. Architectural Decisions
+
+1. **Commands Allowed Without Mandatory `hello`**:
+   - *Investigation*: Audited `docs/spec/commands.md` and `docs/spec/errors.md`. The frozen specification describes `hello` as the initial greeting/negotiation command and provides `NO_AUTH` commands (`ping`, `hello`, `quit`), but does NOT mandate that a client must issue `hello` before executing any other command. There is no `ERR_HELLO_REQUIRED` error in the catalog.
+   - *Decision*: Clients are permitted to execute commands without first sending `hello`. If authentication is configured on the engine (`require_auth = true`), commands requiring authentication will return `5001` (`ERR_AUTH_REQUIRED`) unless authenticated or flagged `NO_AUTH`. If authentication is not required, commands execute immediately upon connection.
+
+2. **EventLoop `on_tick` and `wants_tick` Hooks**:
+   - *Investigation*: Under the single-threaded epoll model, an idle server blocks in `epoll_wait` indefinitely (or until timer expiry). If a table resize migration is ongoing, background migration steps must proceed without waiting for new network I/O events, but an idle server with no ongoing migration must not spin the CPU.
+   - *Decision*: Added default methods to `src/net::Handler`:
+     ```rust
+     fn wants_tick(&self) -> bool { false }
+     fn on_tick(&mut self, _event_loop: &mut EventLoop) -> io::Result<()> { Ok(()) }
+     ```
+   - In `EventLoop::run_once_internal`, if `handler.wants_tick()` returns `true`, the epoll timeout is clamped to 1 ms (`Duration::from_millis(1)`). If `false`, the standard timer/infinite wait timeout is retained.
+   - `on_tick` is called once per loop iteration after timer callbacks and I/O readiness dispatches.
+   - Backward compatibility: The existing echo servers and tests implement `Handler` without modifications and continue to pass cleanly.
+
+3. **Max Work Per Tick Limit**:
+   - `Server::on_tick` checks `self.engine.store().table().is_resizing()`.
+   - If resizing is active, it calls `self.engine.store_mut().step_migration(16)` exactly once per tick (moving 16 slots).
+   - It never loops to completion in a single tick, ensuring low latency and fairness with network I/O.
+
+4. **Connection Close & Error Framing Rules**:
+   - Framing and decode errors in the 1000 range (`1001` to `1007`) are fatal: `FrameOutcome` sets `close = true`. For decodable headers, an error response frame is transmitted before closing the socket.
+   - Semantic command errors (`2001` to `7001`) return structured `Value::Error` but leave the connection open (`close = false`).
+   - The `quit` command replies with `Value::Text("ok")` and sets `close = true` for graceful shutdown.
+
+5. **Pipelining & FIFO Guarantee**:
+   - Multiple frames received in a single TCP read buffer are decoded sequentially.
+   - Responses are produced and enqueued into `WriteQueue` in identical arrival order without reordering.

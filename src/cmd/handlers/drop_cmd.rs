@@ -18,7 +18,10 @@ use std::collections::HashSet;
 pub fn handle_drop(ctx: &mut Context<'_>, args: &[Value]) -> Result<Value, CmdError> {
     // Fast path: exactly one key avoids all Vec and HashSet allocations
     if args.len() == 1 {
-        let key = key_arg_with_limit(&args[0], ctx.config.max_key_size)?;
+        let Some(key_item) = args.first() else {
+            return Err(crate::cmd::ERR_INTERNAL_ERROR);
+        };
+        let key = key_arg_with_limit(key_item, ctx.config.max_key_size)?;
         let removed = i64::from(ctx.store.remove(key));
         return Ok(Value::Int(removed));
     }

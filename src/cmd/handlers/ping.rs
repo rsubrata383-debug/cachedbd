@@ -18,8 +18,11 @@ pub fn handle_ping(_ctx: &mut Context<'_>, args: &[Value]) -> Result<Value, CmdE
     if args.is_empty() {
         return Ok(Value::Text("pong".to_string()));
     }
-    match &args[0] {
-        Value::Text(_) | Value::Bytes(_) => Ok(args[0].clone()),
+    let Some(msg_item) = args.first() else {
+        return Err(crate::cmd::ERR_INTERNAL_ERROR);
+    };
+    match msg_item {
+        Value::Text(_) | Value::Bytes(_) => Ok(msg_item.clone()),
         _ => Err(ERR_INVALID_ARGUMENT),
     }
 }

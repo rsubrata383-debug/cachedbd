@@ -13,6 +13,9 @@ use crate::proto::Value;
 ///
 /// Returns key validation errors ([`crate::cmd::ERR_EMPTY_KEY`] 2006, [`crate::cmd::ERR_KEY_TOO_LARGE`] 2004, [`crate::cmd::ERR_INVALID_ARGUMENT`] 2003).
 pub fn handle_has(ctx: &mut Context<'_>, args: &[Value]) -> Result<Value, CmdError> {
-    let key = key_arg_with_limit(&args[0], ctx.config.max_key_size)?;
+    let Some(key_item) = args.first() else {
+        return Err(crate::cmd::ERR_INTERNAL_ERROR);
+    };
+    let key = key_arg_with_limit(key_item, ctx.config.max_key_size)?;
     Ok(Value::Bool(ctx.store.contains(key)))
 }

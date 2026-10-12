@@ -4,16 +4,20 @@ pub mod bump;
 pub mod drop_cmd;
 pub mod fetch;
 pub mod has;
+pub mod hello;
 pub mod ping;
 pub mod put;
+pub mod quit;
 pub mod size;
 
 pub use bump::{handle_bump, parse_strict_i64};
 pub use drop_cmd::handle_drop;
 pub use fetch::handle_fetch;
 pub use has::handle_has;
+pub use hello::handle_hello;
 pub use ping::handle_ping;
 pub use put::handle_put;
+pub use quit::handle_quit;
 pub use size::handle_size;
 
 use crate::proto::Value;

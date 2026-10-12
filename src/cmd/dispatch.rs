@@ -4,7 +4,8 @@ use crate::cmd::error::{
     CmdError, ERR_AUTH_REQUIRED, ERR_READONLY_REPLICA, ERR_UNKNOWN_COMMAND, ERR_WRONG_ARG_COUNT,
 };
 use crate::cmd::handlers::{
-    handle_bump, handle_drop, handle_fetch, handle_has, handle_ping, handle_put, handle_size,
+    handle_bump, handle_drop, handle_fetch, handle_has, handle_hello, handle_ping, handle_put,
+    handle_quit, handle_size,
 };
 use crate::cmd::parse::{DEFAULT_MAX_ARGS, DEFAULT_MAX_KEY_SIZE, parse_command};
 use crate::proto::Value;
@@ -108,6 +109,20 @@ pub static REGISTRY: &[CommandEntry] = &[
         flags: CommandFlags::WRITE,
         handler: handle_bump,
     },
+    CommandEntry {
+        name: b"hello",
+        min_args: 2,
+        max_args: Some(3),
+        flags: CommandFlags::NO_AUTH.union(CommandFlags::READ),
+        handler: handle_hello,
+    },
+    CommandEntry {
+        name: b"quit",
+        min_args: 0,
+        max_args: Some(0),
+        flags: CommandFlags::NO_AUTH.union(CommandFlags::READ),
+        handler: handle_quit,
+    },
 ];
 
 // linear scan, revisit when registry passes ~20 commands
@@ -172,6 +187,8 @@ pub struct Context<'a> {
     pub config: &'a CmdConfig,
     /// Mutable handle to client session state.
     pub session: &'a mut Session,
+    /// Whether the connection should be closed after sending the reply.
+    pub close: bool,
 }
 
 /// Outcome of executing a command request.
@@ -298,12 +315,13 @@ impl Engine {
             store: &mut self.store,
             config: &self.config,
             session,
+            close: false,
         };
 
         match (entry.handler)(&mut ctx, args) {
             Ok(reply) => Outcome {
                 reply,
-                close: false,
+                close: ctx.close,
             },
             Err(err) => Outcome {
                 reply: err.to_value(),

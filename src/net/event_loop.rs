@@ -56,6 +56,26 @@ pub trait Handler {
     fn on_timeout(&mut self, _event_loop: &mut EventLoop, _timer_id: TimerId) -> io::Result<()> {
         Ok(())
     }
+
+    /// Indicates whether the handler has pending background work requiring periodic ticks.
+    ///
+    /// When `true`, the event loop caps kernel polling sleep to ~1 ms so [`Handler::on_tick`]
+    /// continues running even when no I/O traffic arrives. When `false` (default), the loop sleeps
+    /// indefinitely or until the next scheduled timer, consuming 0% idle CPU.
+    fn wants_tick(&self) -> bool {
+        false
+    }
+
+    /// Invoked once per event loop iteration, after expired timers and I/O events have been processed.
+    ///
+    /// Default implementation is a no-op returning `Ok(())`.
+    ///
+    /// # Errors
+    ///
+    /// Returning an [`io::Error`] terminates the entire event loop.
+    fn on_tick(&mut self, _event_loop: &mut EventLoop) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// An entry in the event loop's timer queue.
@@ -251,12 +271,20 @@ impl EventLoop {
             .peek()
             .map(|earliest| earliest.deadline.saturating_duration_since(now));
 
-        let effective_timeout = match (timeout, timer_timeout) {
+        let mut effective_timeout = match (timeout, timer_timeout) {
             (Some(user_dur), Some(timer_dur)) => Some(user_dur.min(timer_dur)),
             (Some(user_dur), None) => Some(user_dur),
             (None, Some(timer_dur)) => Some(timer_dur),
             (None, None) => None,
         };
+
+        if handler.wants_tick() {
+            const TICK_POLL_TIMEOUT: Duration = Duration::from_millis(1);
+            effective_timeout = Some(match effective_timeout {
+                Some(dur) => dur.min(TICK_POLL_TIMEOUT),
+                None => TICK_POLL_TIMEOUT,
+            });
+        }
 
         // Round up sub-millisecond durations and clamp to MAX_POLL_TIMEOUT_MS:
         let raw_timeout_ms = Self::compute_timeout_ms(effective_timeout);
@@ -297,6 +325,9 @@ impl EventLoop {
         for &event in &ready_events[..copy_len] {
             handler.on_event(self, event.token(), event.flags())?;
         }
+
+        // 4. Dispatch background tick.
+        handler.on_tick(self)?;
 
         Ok(num_events)
     }
@@ -477,6 +508,57 @@ mod tests {
 
         // Reset the flag for other tests.
         crate::net::sys::reset_shutdown();
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    struct TickHandler {
+        ticks: usize,
+        wants: bool,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Handler for TickHandler {
+        fn on_event(
+            &mut self,
+            _event_loop: &mut EventLoop,
+            _token: Token,
+            _flags: EpollFlags,
+        ) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn wants_tick(&self) -> bool {
+            self.wants
+        }
+
+        fn on_tick(&mut self, _event_loop: &mut EventLoop) -> io::Result<()> {
+            self.ticks += 1;
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_event_loop_tick_hook() -> io::Result<()> {
+        let mut el = EventLoop::new()?;
+        let mut handler = TickHandler {
+            ticks: 0,
+            wants: true,
+        };
+
+        // Even with no traffic, run_once with wants_tick = true executes on_tick
+        let _ = el.run_once(&mut handler, Some(Duration::from_millis(5)))?;
+        assert_eq!(handler.ticks, 1);
+
+        let _ = el.run_once(&mut handler, Some(Duration::from_millis(5)))?;
+        assert_eq!(handler.ticks, 2);
+
+        // With wants_tick = false, on_tick is still called after the poll
+        handler.wants = false;
+        let _ = el.run_once(&mut handler, Some(Duration::from_millis(0)))?;
+        assert_eq!(handler.ticks, 3);
+
         Ok(())
     }
 
