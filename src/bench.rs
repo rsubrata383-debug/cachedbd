@@ -32,6 +32,9 @@ Options:
   --json                 Output results as a single JSON line
   -h, --help             Print help information";
 
+/// Default non-zero fallback seed used when 0 is passed to [`XorShift64::new`].
+pub const FALLBACK_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
 /// Deterministic 64-bit XorShift pseudorandom number generator strictly
 /// conforming to AGENTS.md rule 11.1.
 #[derive(Debug, Clone)]
@@ -40,15 +43,14 @@ pub struct XorShift64 {
 }
 
 impl XorShift64 {
-    /// Creates a new generator with the given non-zero seed.
+    /// Creates a new generator with the given seed.
     ///
-    /// # Panics
-    ///
-    /// Panics if `seed == 0` (zero state is prohibited in XorShift).
+    /// If `seed == 0`, a deterministic non-zero fallback constant (`0x9E37_79B9_7F4A_7C15`)
+    /// is used instead to guarantee a valid non-zero internal state without panicking.
     #[must_use]
     pub fn new(seed: u64) -> Self {
-        assert_ne!(seed, 0, "XorShift64 seed must not be zero");
-        Self { state: seed }
+        let state = if seed == 0 { FALLBACK_SEED } else { seed };
+        Self { state }
     }
 
     /// Emits the next pseudorandom 64-bit word.
@@ -66,11 +68,11 @@ impl XorShift64 {
     /// Extracts high-order bits (`>> 32`) and computes modulo on wide `u64`
     /// before casting to `usize`. Note: accepts `% diff` modulo bias for performance.
     ///
-    /// # Panics
-    ///
-    /// Panics if `min >= max`.
+    /// If `min >= max`, returns `min` without panicking.
     pub fn gen_range(&mut self, min: usize, max: usize) -> usize {
-        assert!(min < max, "empty range: min must be strictly less than max");
+        if min >= max {
+            return min;
+        }
         let diff = (max - min) as u64;
         let offset = ((self.next_u64() >> 32) % diff) as usize;
         min + offset
@@ -84,6 +86,31 @@ impl XorShift64 {
     /// Returns a pseudorandom boolean by sampling the most significant bit (MSB).
     pub fn gen_bool(&mut self) -> bool {
         (self.next_u64() >> 63) == 1
+    }
+}
+
+/// Derives a deterministic, guaranteed non-zero pseudorandom seed for worker threads.
+///
+/// Combines the base seed and thread index using an odd multiplier and odd offset
+/// to ensure the resulting seed is never 0 for any valid base seed. If the derived
+/// value would ever be 0, falls back to [`FALLBACK_SEED`].
+#[must_use]
+pub fn thread_seed(base: u64, thread_idx: usize) -> u64 {
+    let derived = base
+        .wrapping_mul(0x517c_c1b7_2722_0a95)
+        .wrapping_add(((thread_idx as u64) + 1) * 2 + 1);
+    if derived == 0 { FALLBACK_SEED } else { derived }
+}
+
+/// Computes throughput in operations per second.
+///
+/// Returns `0.0` if `duration_secs <= 0.0`.
+#[must_use]
+pub fn compute_ops_per_sec(total_ops: u64, duration_secs: f64) -> f64 {
+    if duration_secs <= 0.0 {
+        0.0
+    } else {
+        total_ops as f64 / duration_secs
     }
 }
 
@@ -480,7 +507,6 @@ pub fn generate_batch(
         let key_idx = rng.gen_range(0, keys);
         match workload {
             Workload::Read => {
-                // 95% fetch, 5% put
                 if rng.gen_percent() < 95 {
                     batch.push(vec![
                         Value::Text("fetch".to_string()),
@@ -495,7 +521,6 @@ pub fn generate_batch(
                 }
             }
             Workload::Write => {
-                // 100% put
                 batch.push(vec![
                     Value::Text("put".to_string()),
                     Value::Text(format!("key:{key_idx}")),
@@ -503,7 +528,6 @@ pub fn generate_batch(
                 ]);
             }
             Workload::Mixed => {
-                // 50% fetch, 40% put, 5% bump, 5% drop
                 let roll = rng.gen_percent();
                 if roll < 50 {
                     batch.push(vec![
@@ -517,7 +541,6 @@ pub fn generate_batch(
                         Value::Bytes(value_payload.to_vec()),
                     ]);
                 } else if roll < 95 {
-                    // Separate counter key space avoids ERR_NOT_AN_INTEGER (3004)
                     batch.push(vec![
                         Value::Text("bump".to_string()),
                         Value::Text(format!("cnt:{key_idx}")),
@@ -531,7 +554,6 @@ pub fn generate_batch(
                 }
             }
             Workload::Bump => {
-                // 100% bump
                 batch.push(vec![
                     Value::Text("bump".to_string()),
                     Value::Text(format!("cnt:{key_idx}")),
@@ -553,7 +575,7 @@ pub struct BenchReport {
     pub total_ops: u64,
     /// Total logical command error replies received.
     pub total_errors: u64,
-    /// Actual wall-clock measurement duration.
+    /// Measurement duration, defined as the largest measurement elapsed time across all workers.
     pub duration: Duration,
     /// Calculated aggregate operations per second.
     pub ops_per_sec: f64,
@@ -672,6 +694,7 @@ impl BenchReport {
 struct WorkerResult {
     ops: u64,
     errors: u64,
+    duration: Duration,
     histogram: Histogram,
     error: Option<String>,
 }
@@ -723,12 +746,8 @@ fn run_worker(
     warmup_duration: Duration,
     measure_duration: Duration,
 ) -> WorkerResult {
-    let thread_seed = cfg
-        .seed
-        .wrapping_mul(0x517c_c1b7_2722_0a95)
-        .wrapping_add(((thread_idx as u64) + 1) * 2 + 1);
-
-    let mut rng = XorShift64::new(thread_seed);
+    let s = thread_seed(cfg.seed, thread_idx);
+    let mut rng = XorShift64::new(s);
 
     let mut client = match Client::connect(&cfg.addr) {
         Ok(c) => c,
@@ -736,6 +755,7 @@ fn run_worker(
             return WorkerResult {
                 ops: 0,
                 errors: 0,
+                duration: Duration::ZERO,
                 histogram: Histogram::new(),
                 error: Some(format!("worker {thread_idx} connect error: {e}")),
             };
@@ -782,15 +802,22 @@ fn run_worker(
         }
     }
 
+    let worker_measure_duration = measure_start.elapsed();
+
     WorkerResult {
         ops,
         errors,
+        duration: worker_measure_duration,
         histogram,
         error: thread_error,
     }
 }
 
 /// Executes the full benchmark run across concurrent worker threads.
+///
+/// Measures throughput exclusively over the measurement period (excluding warmup).
+/// The aggregated report duration is defined as the largest measurement elapsed time
+/// across all worker threads.
 ///
 /// # Errors
 ///
@@ -827,11 +854,11 @@ pub fn run_benchmark(config: &BenchConfig) -> Result<BenchReport, String> {
         handles.push(handle);
     }
 
-    let run_start = Instant::now();
     let mut total_ops = 0u64;
     let mut total_errors = 0u64;
     let mut combined_histogram = Histogram::new();
     let mut thread_errors = Vec::new();
+    let mut max_worker_duration = Duration::ZERO;
 
     for handle in handles {
         match handle.join() {
@@ -839,6 +866,9 @@ pub fn run_benchmark(config: &BenchConfig) -> Result<BenchReport, String> {
                 total_ops += result.ops;
                 total_errors += result.errors;
                 combined_histogram.merge(&result.histogram);
+                if result.duration > max_worker_duration {
+                    max_worker_duration = result.duration;
+                }
                 if let Some(err) = result.error {
                     thread_errors.push(err);
                 }
@@ -849,18 +879,14 @@ pub fn run_benchmark(config: &BenchConfig) -> Result<BenchReport, String> {
         }
     }
 
-    let actual_duration = run_start.elapsed().max(measure_duration);
-    let ops_per_sec = if actual_duration.as_secs_f64() > 0.0 {
-        total_ops as f64 / actual_duration.as_secs_f64()
-    } else {
-        0.0
-    };
+    let report_duration = max_worker_duration;
+    let ops_per_sec = compute_ops_per_sec(total_ops, report_duration.as_secs_f64());
 
     Ok(BenchReport {
         config: config.clone(),
         total_ops,
         total_errors,
-        duration: actual_duration,
+        duration: report_duration,
         ops_per_sec,
         histogram: combined_histogram,
         thread_errors,
@@ -870,6 +896,43 @@ pub fn run_benchmark(config: &BenchConfig) -> Result<BenchReport, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_compute_ops_per_sec() {
+        assert_eq!(compute_ops_per_sec(100, 0.0), 0.0);
+        assert_eq!(compute_ops_per_sec(100, -1.0), 0.0);
+        let normal = compute_ops_per_sec(10_000, 2.0);
+        assert!((normal - 5000.0).abs() < 1e-6);
+        let large = compute_ops_per_sec(1_000_000_000, 10.0);
+        assert!((large - 100_000_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_xor_shift_zero_seed_uses_fallback() {
+        let mut rng = XorShift64::new(0);
+        let val1 = rng.next_u64();
+        let val2 = rng.next_u64();
+        assert_ne!(val1, 0);
+        assert_ne!(val2, 0);
+        assert_ne!(val1, val2);
+    }
+
+    #[test]
+    fn test_xor_shift_gen_range_empty_or_inverted() {
+        let mut rng = XorShift64::new(1234);
+        assert_eq!(rng.gen_range(10, 10), 10);
+        assert_eq!(rng.gen_range(20, 10), 20);
+    }
+
+    #[test]
+    fn test_thread_seeds_never_zero() {
+        for base in 1..=1000 {
+            for tid in 0..64 {
+                let s = thread_seed(base, tid);
+                assert_ne!(s, 0, "thread seed was 0 for base {base}, tid {tid}");
+            }
+        }
+    }
 
     #[test]
     fn test_parse_args_defaults() {

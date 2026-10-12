@@ -377,7 +377,7 @@ When evaluating network benchmark results, consider the following environmental 
 
 ### Network Benchmark Results (GitHub Actions CI)
 
-The table below reflects automated measurements gathered via `.github/workflows/bench.yml`:
+The table below reflects automated measurements gathered via `.github/workflows/network-bench.yml` (the in-memory store benchmark is run via `.github/workflows/bench.yml`):
 
 | Workload | Pipeline | Connections | Throughput (ops/sec) | Batch Latency p50 | Batch Latency p99 | Batch Latency p99.9 | Batch Latency max |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |

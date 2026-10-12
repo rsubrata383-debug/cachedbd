@@ -49,3 +49,9 @@ Architecture overview of the multi-threaded synthetic load generator `cachedb-be
   - Supports arbitrary percentiles ($P \in [0.0, 100.0]$), calculating p50, p99, and p99.9 via linear prefix scans over bucket counters.
   - Returns durations bounded by the exact maximum observed latency.
 
+---
+
+## 4. CI Automation Workflow
+
+- Network load generator runs are automated via `.github/workflows/network-bench.yml` on manual dispatch (`workflow_dispatch`).
+- The low-level in-memory store micro-benchmark remains hosted in `.github/workflows/bench.yml`.

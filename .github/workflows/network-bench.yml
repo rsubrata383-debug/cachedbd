@@ -1,0 +1,95 @@
+name: Network Benchmark
+
+on:
+  workflow_dispatch:
+
+env:
+  RUST_BACKTRACE: "1"
+
+jobs:
+  benchmark:
+    name: Run cachedb-bench (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: System and CPU environment
+        run: |
+          echo "=== CPU Info ==="
+          lscpu
+          echo "=== Logical Cores ==="
+          nproc
+          echo "=== Rust Version ==="
+          rustc --version
+          cargo --version
+
+      - name: Build release binaries
+        run: |
+          cargo build --release --bin cachedbd --bin cachedb-bench
+
+      - name: Run benchmark suite
+        run: |
+          set -euo pipefail
+
+          OUT="network-benchmark-results.txt"
+          echo "# Cachedb Load Generator Benchmark Results" > "$OUT"
+          echo "Date: $(date -u)" >> "$OUT"
+          echo "Host: $(uname -srm)" >> "$OUT"
+          echo "CPUs: $(nproc)" >> "$OUT"
+          echo "" >> "$OUT"
+
+          # Start server in background and set trap to ensure it is terminated on exit
+          ./target/release/cachedbd --bind 127.0.0.1 --port 7878 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true' EXIT
+
+          # Poll for server ready
+          SERVER_READY=0
+          for i in $(seq 1 30); do
+            if nc -z 127.0.0.1 7878 2>/dev/null || (echo > /dev/tcp/127.0.0.1/7878) 2>/dev/null; then
+              SERVER_READY=1
+              echo "Server is ready on port 7878 (attempt $i)."
+              break
+            fi
+            sleep 0.2
+          done
+
+          if [ "$SERVER_READY" -ne 1 ]; then
+            echo "Error: cachedbd failed to open port 7878 within 6 seconds" >&2
+            exit 1
+          fi
+
+          echo "## Workload: Read (Pipeline 16)" >> "$OUT"
+          ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload read --connections 4 --duration 10 --warmup 2 --pipeline 16 --preload | tee -a "$OUT"
+          echo "" >> "$OUT"
+
+          echo "## Workload: Read (Pipeline 1)" >> "$OUT"
+          ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload read --connections 4 --duration 10 --warmup 2 --pipeline 1 | tee -a "$OUT"
+          echo "" >> "$OUT"
+
+          echo "## Workload: Write (Pipeline 16)" >> "$OUT"
+          ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload write --connections 4 --duration 10 --warmup 2 --pipeline 16 | tee -a "$OUT"
+          echo "" >> "$OUT"
+
+          echo "## Workload: Mixed (Pipeline 16)" >> "$OUT"
+          ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload mixed --connections 4 --duration 10 --warmup 2 --pipeline 16 --preload | tee -a "$OUT"
+          echo "" >> "$OUT"
+
+          echo "## Workload: Bump (Pipeline 16)" >> "$OUT"
+          ./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload bump --connections 4 --duration 10 --warmup 2 --pipeline 16 | tee -a "$OUT"
+          echo "" >> "$OUT"
+
+          cat "$OUT" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-benchmark-results
+          path: network-benchmark-results.txt
+          if-no-files-found: error
+
