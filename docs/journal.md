@@ -1619,3 +1619,19 @@ We formalized the exact coercion and error mapping as follows:
 1. **Key Type Preservation**: Commands like `put 123 456` or `bump 100 5` must treat the key as `Value::Text("123")` rather than `Value::Int(123)` to align with server storage and dictionary lookup rules.
 2. **Server Verb Return Values**: Server handlers return lowercase string values (e.g. `ping` returns `"pong"` rather than `"PONG"`, `quit` returns `"ok"`).
 3. **Deadlock in Pipeline Batches**: Without chunking, large pipeline bursts easily exceed OS socket send/receive buffer sizes (typically 64KB–256KB), stalling both client and server when socket writes block synchronously. Chunking guarantees safe forward progress.
+
+---
+
+## 2026-10-12: Week 8 Step 3 — Server Hardening, Backpressure, Fairness & Client Refinements
+
+1. **CLI Key Parsing**: Updated `cli::build_command` to treat all arguments after `drop` as `Value::Text` keys, matching multi-key semantics.
+2. **Client Buffer Reuse**: Replaced 64 KB per-frame allocations in `Client::read_frame` with reusable heap-allocated scratch buffer `read_scratch`.
+3. **Pipeline Chunking Optimization**: Cached oversized serialized frames via `pending_encoded` across chunk boundaries, avoiding duplicate encoding.
+4. **Level-Triggered Epoll**: Verified `src/net/` operates in level-triggered mode, necessitating explicit `epoll_ctl(EPOLL_CTL_MOD)` to drop `READABLE`.
+5. **Config & Watermarks**: Added `ServerConfig` with 4 MiB high and 1 MiB low write watermarks, 256 frames / 256 KiB fairness limits, and 300 s idle timeout.
+6. **Backpressure**: Pauses client reading and drops `READABLE` interest once write queue exceeds 4 MiB, exceeding by at most one reply frame.
+7. **Fairness**: Enforced per-event frame/read limits with `pending_work` queue and `wants_tick()`, preventing large pipelines from starving pings.
+8. **Idle Timeout**: Monitored per-connection `last_active`, sweeping inactive connections via 1-second event loop timer and closing them cleanly.
+9. **Telemetry**: Introduced `ServerStats` with relaxed atomic counters for connections, backpressure pauses, peak queue sizes, and processed frames.
+10. **Testing**: Implemented Linux hardening E2E suite covering slow readers, isolation, fairness, idle sweeps, and abrupt disconnects.
+

@@ -5,7 +5,8 @@
 //! and interest flag state for the event loop.
 
 use crate::net::buffer::{
-    DEFAULT_MAX_READ_CAPACITY, DEFAULT_WRITE_HIGH_WATERMARK, ReadBuffer, WriteQueue,
+    DEFAULT_MAX_READ_CAPACITY, DEFAULT_WRITE_HIGH_WATERMARK, DEFAULT_WRITE_LOW_WATERMARK,
+    ReadBuffer, WriteQueue,
 };
 use crate::net::event_loop::{EventLoop, Token};
 use crate::net::sys::{EpollFlags, RawFd, as_raw_fd};
@@ -365,6 +366,8 @@ pub struct ConnectionTable<S = TcpStream> {
     next_token: Token,
     max_connections: usize,
     max_read_capacity: usize,
+    write_high_watermark: usize,
+    write_low_watermark: usize,
 }
 
 impl<S> Default for ConnectionTable<S> {
@@ -388,7 +391,27 @@ impl<S> ConnectionTable<S> {
             next_token: 1, // 0 is reserved for LISTENER_TOKEN
             max_connections,
             max_read_capacity: DEFAULT_MAX_READ_CAPACITY,
+            write_high_watermark: DEFAULT_WRITE_HIGH_WATERMARK,
+            write_low_watermark: DEFAULT_WRITE_LOW_WATERMARK,
         }
+    }
+
+    /// Configures the high and low write queue watermarks applied to newly inserted connections.
+    pub fn set_watermarks(&mut self, high: usize, low: usize) {
+        self.write_high_watermark = high;
+        self.write_low_watermark = low;
+    }
+
+    /// Returns the configured high-watermark threshold in bytes for new connections.
+    #[must_use]
+    pub fn write_high_watermark(&self) -> usize {
+        self.write_high_watermark
+    }
+
+    /// Returns the configured low-watermark threshold in bytes for new connections.
+    #[must_use]
+    pub fn write_low_watermark(&self) -> usize {
+        self.write_low_watermark
     }
 
     /// Returns the maximum read buffer capacity for connections in this table.
@@ -422,12 +445,14 @@ impl<S> ConnectionTable<S> {
             self.next_token = 1;
         }
 
-        let connection = Connection::with_limits(
+        let connection = Connection::with_custom_limits(
             token,
             stream,
             peer_addr,
             self.max_read_capacity,
-            DEFAULT_WRITE_HIGH_WATERMARK,
+            self.write_high_watermark,
+            self.write_low_watermark,
+            crate::net::buffer::DEFAULT_MAX_WRITE_CAPACITY,
         );
         self.connections.insert(token, connection);
         Ok(token)

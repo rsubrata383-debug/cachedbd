@@ -313,6 +313,7 @@ pub struct Client {
     buf: Vec<u8>,
     read_cursor: usize,
     is_broken: bool,
+    read_scratch: Box<[u8]>,
 }
 
 impl Client {
@@ -380,6 +381,7 @@ impl Client {
             buf: Vec::new(),
             read_cursor: 0,
             is_broken: false,
+            read_scratch: vec![0u8; 64 * 1024].into_boxed_slice(),
         };
 
         client.perform_handshake()?;
@@ -504,10 +506,7 @@ impl Client {
         })?;
 
         let reply = self.read_frame()?;
-        match self.validate_reply(reply, req_id)? {
-            Ok(val) => Ok(val),
-            Err(server_err) => Err(server_err),
-        }
+        self.validate_reply(reply, req_id)?
     }
 
     fn validate_reply(
@@ -595,17 +594,26 @@ impl Client {
 
         let mut results = Vec::with_capacity(commands.len());
         let mut iter = commands.into_iter();
-        let mut pending_cmd = iter.next();
+        let mut pending_encoded: Option<(u32, Vec<u8>)> = None;
 
-        while let Some(cmd) = pending_cmd.take() {
+        loop {
             let mut chunk_expected_ids = Vec::new();
             let mut chunk_bytes = Vec::new();
 
-            let mut current = Some(cmd);
-            while let Some(c) = current.take() {
+            if let Some((req_id, encoded)) = pending_encoded.take() {
+                chunk_expected_ids.push(req_id);
+                chunk_bytes.extend_from_slice(&encoded);
+            }
+
+            while chunk_expected_ids.len() < PIPELINE_CHUNK_COMMANDS {
+                let Some(cmd) = iter.next() else {
+                    break;
+                };
+
                 let req_id = self.next_request_id;
+                self.next_request_id = self.next_request_id.wrapping_add(1);
                 let header = Header::new(0, req_id, Opcode::Command, 0);
-                let frame = Frame::new(header, Value::Array(c));
+                let frame = Frame::new(header, Value::Array(cmd));
                 let mut encoded = Vec::new();
                 encode_frame(&frame, &mut encoded).map_err(|e| {
                     self.is_broken = true;
@@ -613,27 +621,22 @@ impl Client {
                 })?;
 
                 if !chunk_expected_ids.is_empty()
-                    && (chunk_expected_ids.len() >= PIPELINE_CHUNK_COMMANDS
-                        || chunk_bytes.len() + encoded.len() > PIPELINE_CHUNK_BYTES)
+                    && chunk_bytes.len() + encoded.len() > PIPELINE_CHUNK_BYTES
                 {
-                    if let Value::Array(arr) = frame.payload {
-                        pending_cmd = Some(arr);
-                    }
+                    pending_encoded = Some((req_id, encoded));
                     break;
                 }
 
-                self.next_request_id = self.next_request_id.wrapping_add(1);
                 chunk_expected_ids.push(req_id);
                 chunk_bytes.extend_from_slice(&encoded);
 
-                if chunk_expected_ids.len() >= PIPELINE_CHUNK_COMMANDS
-                    || chunk_bytes.len() >= PIPELINE_CHUNK_BYTES
-                {
-                    pending_cmd = iter.next();
+                if chunk_bytes.len() >= PIPELINE_CHUNK_BYTES {
                     break;
                 }
+            }
 
-                current = iter.next();
+            if chunk_expected_ids.is_empty() {
+                break;
             }
 
             self.stream.write_all(&chunk_bytes).map_err(|e| {
@@ -975,7 +978,6 @@ impl Client {
             return Err(ClientError::ConnectionClosed);
         }
 
-        let mut temp = vec![0u8; 64 * 1024];
         let max_payload_len = u32::try_from(self.config.max_reply_size).unwrap_or(u32::MAX);
 
         loop {
@@ -1031,13 +1033,13 @@ impl Client {
                 self.read_cursor = 0;
             }
 
-            match self.stream.read(&mut temp) {
+            match self.stream.read(&mut self.read_scratch[..]) {
                 Ok(0) => {
                     self.is_broken = true;
                     return Err(ClientError::ConnectionClosed);
                 }
                 Ok(n) => {
-                    self.buf.extend_from_slice(&temp[..n]);
+                    self.buf.extend_from_slice(&self.read_scratch[..n]);
                 }
                 Err(e) => {
                     self.is_broken = true;

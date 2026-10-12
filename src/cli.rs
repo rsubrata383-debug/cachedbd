@@ -125,9 +125,9 @@ pub fn parse_args(args: &[String]) -> Result<CliConfig, CliError> {
             if i >= args.len() {
                 return Err(CliError::Usage("missing value for --port".to_string()));
             }
-            let p = args[i].parse::<u16>().map_err(|_| {
-                CliError::Usage(format!("invalid port number: '{}'", args[i]))
-            })?;
+            let p = args[i]
+                .parse::<u16>()
+                .map_err(|_| CliError::Usage(format!("invalid port number: '{}'", args[i])))?;
             if p == 0 {
                 return Err(CliError::Usage("port number must not be 0".to_string()));
             }
@@ -168,9 +168,7 @@ fn parse_escape_char(
             let h1 = chars[*i + 1];
             let h2 = chars[*i + 2];
             if !h1.is_ascii_hexdigit() || !h2.is_ascii_hexdigit() {
-                return Err(CliError::Parse(format!(
-                    "invalid hex escape: \\x{h1}{h2}"
-                )));
+                return Err(CliError::Parse(format!("invalid hex escape: \\x{h1}{h2}")));
             }
             let d1 = h1.to_digit(16).unwrap_or(0);
             let d2 = h2.to_digit(16).unwrap_or(0);
@@ -219,10 +217,15 @@ fn parse_quoted_token(chars: &[char], start: usize) -> Result<(Token, usize), Cl
         )));
     }
 
-    let text = String::from_utf8(byte_buf).map_err(|e| {
-        CliError::Parse(format!("invalid UTF-8 in quoted token: {e}"))
-    })?;
-    Ok((Token { text, is_quoted: true }, i))
+    let text = String::from_utf8(byte_buf)
+        .map_err(|e| CliError::Parse(format!("invalid UTF-8 in quoted token: {e}")))?;
+    Ok((
+        Token {
+            text,
+            is_quoted: true,
+        },
+        i,
+    ))
 }
 
 fn parse_unquoted_token(chars: &[char], start: usize) -> Result<(Token, usize), CliError> {
@@ -246,10 +249,15 @@ fn parse_unquoted_token(chars: &[char], start: usize) -> Result<(Token, usize), 
         i += 1;
     }
 
-    let text = String::from_utf8(byte_buf).map_err(|e| {
-        CliError::Parse(format!("invalid UTF-8 in token: {e}"))
-    })?;
-    Ok((Token { text, is_quoted: false }, i))
+    let text = String::from_utf8(byte_buf)
+        .map_err(|e| CliError::Parse(format!("invalid UTF-8 in token: {e}")))?;
+    Ok((
+        Token {
+            text,
+            is_quoted: false,
+        },
+        i,
+    ))
 }
 
 /// Parses a command line string into a sequence of [`Token`]s.
@@ -334,8 +342,8 @@ fn parse_cli_i64(s: &str) -> Option<i64> {
 /// # Rules
 ///
 /// - The first token (command verb) is always [`Value::Text`].
-/// - For commands whose key positions are known (`put`, `fetch`, `drop`, `has`, `bump` at pos 1),
-///   the key argument is always [`Value::Text`].
+/// - For commands whose key positions are known (`put`, `fetch`, `has`, `bump` at pos 1;
+///   `drop` at all positions >= 1), the key arguments are always [`Value::Text`].
 /// - Quoted tokens are always [`Value::Text`].
 /// - Unquoted tokens are typed according to:
 ///   1. Strict signed integer (`i64`) -> [`Value::Int`].
@@ -354,14 +362,13 @@ pub fn build_command(tokens: &[Token]) -> Result<Vec<Value>, CliError> {
     }
 
     let verb = tokens[0].text.to_ascii_lowercase();
-    let has_known_key_pos = matches!(
-        verb.as_str(),
-        "put" | "fetch" | "drop" | "has" | "bump"
-    );
+    let is_drop = verb == "drop";
+    let is_single_key = matches!(verb.as_str(), "put" | "fetch" | "has" | "bump");
 
     let mut values = Vec::with_capacity(tokens.len());
     for (i, token) in tokens.iter().enumerate() {
-        if i == 0 || (i == 1 && has_known_key_pos) || token.is_quoted {
+        let is_key_arg = (is_drop && i >= 1) || (is_single_key && i == 1);
+        if i == 0 || is_key_arg || token.is_quoted {
             values.push(Value::Text(token.text.clone()));
             continue;
         }
@@ -876,6 +883,59 @@ mod tests {
 
         // Empty tokens
         assert!(build_command(&[]).is_err());
+    }
+
+    #[test]
+    fn test_build_command_keys() {
+        // drop: all arguments after verb are Text keys (even unquoted numbers)
+        let drop_tokens = vec![
+            Token {
+                text: "drop".to_string(),
+                is_quoted: false,
+            },
+            Token {
+                text: "123".to_string(),
+                is_quoted: false,
+            },
+            Token {
+                text: "456".to_string(),
+                is_quoted: false,
+            },
+        ];
+        let drop_vals = build_command(&drop_tokens).expect("build drop");
+        assert_eq!(
+            drop_vals,
+            vec![
+                Value::Text("drop".to_string()),
+                Value::Text("123".to_string()),
+                Value::Text("456".to_string()),
+            ]
+        );
+
+        // put: only pos 1 is key (Text); pos 2 is value (Int 456)
+        let put_tokens = vec![
+            Token {
+                text: "put".to_string(),
+                is_quoted: false,
+            },
+            Token {
+                text: "123".to_string(),
+                is_quoted: false,
+            },
+            Token {
+                text: "456".to_string(),
+                is_quoted: false,
+            },
+        ];
+        let put_vals = build_command(&put_tokens).expect("build put");
+        assert_eq!(
+            put_vals,
+            vec![
+                Value::Text("put".to_string()),
+                Value::Text("123".to_string()),
+                Value::Int(456),
+            ]
+        );
     }
 
     #[test]

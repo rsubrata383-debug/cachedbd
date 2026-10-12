@@ -68,3 +68,44 @@
 - The network event loop executes an `on_tick` callback on every loop iteration, calling `step_migration_tick`.
 - If `step_migration` returns an error (e.g. `TableFull`), the error is recorded, logged once, and `wants_tick` is suppressed (`false`) so the event loop does not spin until the next successful insert or resize start.
 - If no migration is active or migration error is suppressed, the tick performs a zero-cost early return and epoll sleeps normally.
+
+---
+
+## 4. Epoll Trigger Mode & Backpressure Implications
+
+1. **Trigger Mode**: The epoll polling subsystem in `src/net/` is strictly **level-triggered**.
+2. **Code Verification**: In `src/net/sys.rs`, `to_raw_flags()` only sets `libc::EPOLLET` if `EpollFlags::EDGE_TRIGGERED` is passed; in `src/net/connection.rs`, `desired_flags()` sets only `READABLE` and `WRITABLE`, never `EDGE_TRIGGERED`; and `main.rs` registers sockets without `EDGE_TRIGGERED`.
+3. **Backpressure Implication**: In level-triggered mode, as long as unread bytes remain in the socket receive buffer, epoll will continually report `EPOLLIN` on every wait iteration. To prevent 100% CPU busy-spinning while a connection is paused, the server MUST explicitly remove `READABLE` interest via `epoll_ctl(EPOLL_CTL_MOD)`.
+4. **Resumption Implication**: Once write queues drain below the low watermark, restoring `READABLE` via `EPOLL_CTL_MOD` causes the kernel to immediately signal readiness if socket bytes remain.
+5. **Buffered Data**: Because unread data may already reside in user-space read buffers when paused, resuming also requires actively queuing the connection in `pending_work` to avoid waiting indefinitely for new socket traffic.
+
+---
+
+## 5. Server Hardening Architecture (Week 8, Step 3)
+
+### ServerConfig
+- `idle_timeout`: `Option<Duration>` (default: `300s`, `None` = disabled). Configurable via `--idle-timeout <secs>` CLI flag (`0` = never).
+- `write_queue_high_watermark`: `usize` (default: `4 MiB`). Threshold where client socket reads are paused.
+- `write_queue_low_watermark`: `usize` (default: `1 MiB`). Threshold where paused socket reads are resumed.
+- `max_frames_per_event`: `usize` (default: `256`). Maximum complete protocol frames dispatched per event.
+- `max_read_bytes_per_event`: `usize` (default: `256 KiB`). Maximum socket bytes read per event.
+
+### Backpressure (Slow Reader Protection)
+- When a response is enqueued and the connection's write queue exceeds `write_queue_high_watermark`, frame decoding immediately halts for that client and `READABLE` interest is removed from epoll.
+- The write queue exceeds the high watermark by at most one serialized reply frame, preventing unbounded memory growth.
+- During pause, the socket send buffer flushes when writable. If writes make progress, the connection is not considered idle.
+- When the write queue drains to or below `write_queue_low_watermark`, `READABLE` interest is restored in epoll, and any unconsumed frames remaining in the user-space read buffer are enqueued into `pending_work`.
+- If a client disconnects while paused, socket writes fail with `EPIPE` / `ECONNRESET`, immediately cleaning up the connection without leaks or panics.
+
+### Fairness & Deferred Work Processing
+- In `handle_client_read`, at most `max_read_bytes_per_event` bytes are read from the socket, and at most `max_frames_per_event` frames are executed.
+- If buffered unconsumed bytes remain after the fairness limit is reached, the connection token is enqueued into `pending_work: VecDeque<Token>`.
+- `Handler::wants_tick()` returns `true` whenever `!pending_work.is_empty()`, capping event loop polling sleep to 1 ms.
+- In `on_tick()`, deferred connections are drained in round-robin fashion, ensuring large pipelines cannot starve concurrent clients.
+
+### Idle Timeout Tracking & Periodic Sweeps
+- Each connection tracks `last_active: Instant`, reset whenever incoming bytes are read or outgoing bytes make flush progress.
+- A periodic timer (`IDLE_CHECK_TIMER_ID`) runs every `idle_check_interval` (default: 1 s, or `min(1s, idle_timeout / 2)` for sub-second test timeouts).
+- `schedule_initial_timers(&mut event_loop)` MUST be called before starting `event_loop.run(&mut server)` (and is also guarded upon first accept), ensuring the first client is monitored even if no subsequent accept events occur.
+- Connections idle longer than `idle_timeout` are closed and removed, incrementing `ServerStats.connections_closed_idle`.
+

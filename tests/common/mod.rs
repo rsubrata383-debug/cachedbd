@@ -59,6 +59,7 @@ pub struct TestServer {
     addr: std::net::SocketAddr,
     shutdown_handle: std::sync::Arc<std::sync::atomic::AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    stats: std::sync::Arc<cachedb::server::ServerStats>,
 }
 
 #[cfg(target_os = "linux")]
@@ -67,12 +68,30 @@ impl TestServer {
     /// Starts a test server backed by default engine on an ephemeral localhost port.
     #[must_use]
     pub fn start() -> Self {
-        Self::start_with_engine(cachedb::cmd::Engine::new())
+        Self::start_with_engine_and_config(
+            cachedb::cmd::Engine::new(),
+            cachedb::server::ServerConfig::default(),
+        )
     }
 
     /// Starts a test server backed by a custom engine on an ephemeral localhost port.
     #[must_use]
     pub fn start_with_engine(engine: cachedb::cmd::Engine) -> Self {
+        Self::start_with_engine_and_config(engine, cachedb::server::ServerConfig::default())
+    }
+
+    /// Starts a test server backed by default engine with custom configuration.
+    #[must_use]
+    pub fn start_with_config(config: cachedb::server::ServerConfig) -> Self {
+        Self::start_with_engine_and_config(cachedb::cmd::Engine::new(), config)
+    }
+
+    /// Starts a test server backed by custom engine and configuration.
+    #[must_use]
+    pub fn start_with_engine_and_config(
+        engine: cachedb::cmd::Engine,
+        config: cachedb::server::ServerConfig,
+    ) -> Self {
         use cachedb::net::event_loop::EventLoop;
         use cachedb::net::sys::{EpollFlags, as_raw_fd};
         use cachedb::server::{LISTENER_TOKEN, Server};
@@ -80,7 +99,8 @@ impl TestServer {
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
         let addr = listener.local_addr().expect("local addr");
-        let server = Server::with_engine(listener, engine).expect("create server");
+        let mut server = Server::with_config(listener, engine, config).expect("create server");
+        let stats = server.stats();
 
         let mut event_loop = EventLoop::new().expect("create event loop");
         event_loop
@@ -91,8 +111,9 @@ impl TestServer {
             )
             .expect("register listener");
 
+        server.schedule_initial_timers(&mut event_loop);
+
         let shutdown_handle = event_loop.shutdown_handle();
-        let mut server = server;
 
         let thread_handle = std::thread::spawn(move || event_loop.run(&mut server));
 
@@ -100,7 +121,14 @@ impl TestServer {
             addr,
             shutdown_handle,
             thread_handle: Some(thread_handle),
+            stats,
         }
+    }
+
+    /// Returns a shared reference to the server telemetry counters.
+    #[must_use]
+    pub fn stats(&self) -> std::sync::Arc<cachedb::server::ServerStats> {
+        std::sync::Arc::clone(&self.stats)
     }
 
     /// Returns the local socket address of the test server.

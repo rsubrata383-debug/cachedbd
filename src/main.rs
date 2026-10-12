@@ -4,20 +4,23 @@ use std::env;
 #[cfg(target_os = "linux")]
 use std::net::TcpListener;
 use std::process;
+use std::time::Duration;
 
 fn print_help() {
     println!("Usage: cachedbd [OPTIONS]");
     println!();
     println!("Options:");
-    println!("  --bind <ADDR>    IP address to bind to (default: 127.0.0.1)");
-    println!("  --port <PORT>    TCP port to listen on (default: 7878)");
-    println!("  -h, --help       Print help information");
+    println!("  --bind <ADDR>          IP address to bind to (default: 127.0.0.1)");
+    println!("  --port <PORT>          TCP port to listen on (default: 7878)");
+    println!("  --idle-timeout <SECS>  Inactivity timeout in seconds (default: 300, 0 = never)");
+    println!("  -h, --help             Print help information");
 }
 
-fn parse_cli_args() -> (String, u16) {
+fn parse_cli_args() -> (String, u16, Option<Duration>) {
     let mut args = env::args().skip(1);
     let mut bind = "127.0.0.1".to_string();
     let mut port: u16 = 7878;
+    let mut idle_timeout = Some(Duration::from_secs(300));
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -45,6 +48,20 @@ fn parse_cli_args() -> (String, u16) {
                     }
                 }
             }
+            "--idle-timeout" => {
+                let Some(val) = args.next() else {
+                    eprintln!("error: missing argument for --idle-timeout");
+                    process::exit(2);
+                };
+                match val.parse::<u64>() {
+                    Ok(0) => idle_timeout = None,
+                    Ok(secs) => idle_timeout = Some(Duration::from_secs(secs)),
+                    Err(_) => {
+                        eprintln!("error: invalid idle timeout: '{val}'");
+                        process::exit(2);
+                    }
+                }
+            }
             other => {
                 eprintln!("error: unrecognized argument: '{other}'");
                 process::exit(2);
@@ -52,16 +69,16 @@ fn parse_cli_args() -> (String, u16) {
         }
     }
 
-    (bind, port)
+    (bind, port, idle_timeout)
 }
 
 fn main() {
-    let (bind, port) = parse_cli_args();
+    let (bind, port, idle_timeout) = parse_cli_args();
     let addr_str = format!("{bind}:{port}");
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = addr_str;
+        let _ = (addr_str, idle_timeout);
         eprintln!("cachedbd needs Linux (epoll)");
         process::exit(1);
     }
@@ -70,7 +87,7 @@ fn main() {
     {
         use cachedb::net::event_loop::EventLoop;
         use cachedb::net::sys::{EpollFlags, as_raw_fd};
-        use cachedb::server::{LISTENER_TOKEN, Server};
+        use cachedb::server::{LISTENER_TOKEN, Server, ServerConfig};
 
         let listener = match TcpListener::bind(&addr_str) {
             Ok(l) => l,
@@ -97,13 +114,20 @@ fn main() {
             process::exit(1);
         }
 
-        let mut server = match Server::new(listener) {
+        let config = ServerConfig {
+            idle_timeout,
+            ..ServerConfig::default()
+        };
+
+        let mut server = match Server::with_config(listener, cachedb::cmd::Engine::new(), config) {
             Ok(s) => s,
             Err(err) => {
                 eprintln!("error: failed to initialize server: {err}");
                 process::exit(1);
             }
         };
+
+        server.schedule_initial_timers(&mut event_loop);
 
         if let Err(err) = event_loop.run(&mut server) {
             eprintln!("error: event loop error: {err}");
