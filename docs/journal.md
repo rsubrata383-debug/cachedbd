@@ -1683,3 +1683,32 @@ Week 8 Step 3c: tests used a wrong HELLO payload; server was right; fixed helper
    - The multi-workload benchmark suite takes >60 seconds of sustained CPU execution per run across 5 workloads.
    - Running full multi-connection benchmarks on every push or PR would create severe CI queue delays and waste runner minutes.
    - Triggering via manual `workflow_dispatch` enables on-demand profiling and performance regression testing while keeping standard PR CI fast and responsive.
+
+---
+
+## 2026-10-12: Week 8 Step 4c — CI Benchmark Stall Diagnosis & Server TCP_NODELAY Fix
+
+### 1. First CI Benchmark Results
+The first run of the network benchmark suite on GitHub Actions CI revealed a severe performance anomaly between unpipelined and pipelined workloads:
+- **Read (pipeline 1)**: **58,150 ops/s**, batch latency p50 **0.054 ms**.
+- **Read (pipeline 16)**: **1,560 ops/s**, batch latency p50 **41 ms** per batch (consistent ~41 ms on every batch).
+
+### 2. Root Cause Analysis
+The ~41 ms latency per batch is the classic interaction between **Nagle's algorithm** and the TCP **delayed-ACK timer** (~40 ms on Linux):
+1. The client library already sets `TCP_NODELAY` on its socket (`src/client.rs` line 295).
+2. However, the server never called `set_nodelay(true)` on accepted client sockets (`src/server.rs` had no `set_nodelay` calls).
+3. When processing a pipelined batch, the server writes the first reply frame into the socket. The kernel TCP stack transmits this small segment immediately.
+4. For the remaining 15 reply frames, because unacknowledged data is already in flight and each remaining segment is smaller than the maximum segment size (MSS), Nagle's algorithm holds the packets in the server's kernel socket buffer.
+5. Meanwhile, the Linux client TCP stack holds its acknowledgment, waiting for the delayed-ACK timer (~40 ms) to expire before sending the ACK.
+6. Only after the 40 ms ACK arrives does the server kernel release the next buffered segment, causing every pipelined batch to stall for ~41 ms.
+
+### 3. The Fix
+- In `Server::handle_accept` (`src/server.rs`), immediately after accepting a client connection, call `stream.set_nodelay(true)`.
+- If `set_nodelay(true)` fails, the server records the event in `ServerStats.nodelay_failures` (`AtomicU64`, `Ordering::Relaxed`) and continues servicing the connection without crashing.
+- Added a dedicated Linux end-to-end regression test (`test_pipelined_pings_no_nagle_delayed_ack_stall`) in `tests/hardening_e2e.rs` running 200 batches of 16 pipelined `ping` commands with a strict <3s time bound.
+- A second CI benchmark run on GitHub Actions is required to obtain real, unstalled pipeline-16 benchmark numbers.
+
+### 4. Code Inspection: Reply Write Mechanics
+- In `src/server.rs`, `handle_client_read` processes all pipelined frames received in the read buffer, enqueuing serialized reply frames into `WriteQueue` via `conn.send_chunk(out)`.
+- The server performs one flush per event-loop turn by calling `self.handle_client_write(token, event_loop)` once after processing the batch.
+- However, inside `WriteQueue::write_to` (`src/net/buffer.rs`), a `while let Some(front) = self.chunks.front()` loop issues a separate `writer.write()` syscall for every individual frame chunk in the queue rather than using vectored I/O (`writev`) or a coalescing write buffer. While `TCP_NODELAY` prevents Nagle stalls, issuing $N$ individual syscalls per batch incurs avoidable context-switch overhead that could be streamlined in a future optimization phase.

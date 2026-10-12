@@ -375,6 +375,10 @@ When evaluating network benchmark results, consider the following environmental 
 5. **Small Synthetic Values**: Standard benchmarks utilize 64-byte payloads. Workloads with multi-megabyte payloads will be bottlenecked by memory copying and TCP socket buffer watermarks rather than command dispatch throughput.
 6. **In-Memory Operation (No Persistence)**: Measurements reflect pure in-memory execution without WAL disk writes or background snapshot creation enabled.
 
+### Lessons: The 40 ms Nagle + Delayed-ACK Stall
+
+During initial CI benchmark profiling, unpipelined reads (`pipeline 1`) achieved 58,150 ops/s with p50 latency of 0.054 ms, whereas pipelined reads (`pipeline 16`) collapsed to 1,560 ops/s with batch p50 latency of 41 ms (every batch consistently stalled for ~41 ms). This demonstrated the classic deadlock between Nagle's algorithm and delayed ACKs: while the client enabled `TCP_NODELAY`, the server omitted `set_nodelay(true)` on accepted sockets. Pipelined reply streams were buffered in the kernel waiting for delayed ACKs (~40 ms). Enabling `TCP_NODELAY` on accepted sockets in `Server::handle_accept` eliminates this stall.
+
 ### Network Benchmark Results (GitHub Actions CI)
 
 The table below reflects automated measurements gathered via `.github/workflows/network-bench.yml` (the in-memory store benchmark is run via `.github/workflows/bench.yml`):

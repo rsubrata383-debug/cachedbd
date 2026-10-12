@@ -64,6 +64,8 @@ pub struct ServerStats {
     pub max_write_queue_bytes_seen: AtomicU64,
     /// Total number of protocol frames decoded and processed.
     pub frames_processed: AtomicU64,
+    /// Total number of accepted client connections where setting `TCP_NODELAY` failed.
+    pub nodelay_failures: AtomicU64,
 }
 
 // NOTE(atomic-ordering): Relaxed ordering (`Ordering::Relaxed`) is used for all
@@ -280,6 +282,10 @@ impl Server {
                     if stream.set_nonblocking(true).is_err() {
                         drop(stream);
                         continue;
+                    }
+
+                    if stream.set_nodelay(true).is_err() {
+                        self.stats.nodelay_failures.fetch_add(1, Ordering::Relaxed);
                     }
 
                     if self.connections.is_at_capacity() {

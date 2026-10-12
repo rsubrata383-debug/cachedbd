@@ -92,4 +92,3 @@ jobs:
           name: network-benchmark-results
           path: network-benchmark-results.txt
           if-no-files-found: error
-

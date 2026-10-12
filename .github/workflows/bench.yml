@@ -37,4 +37,3 @@ jobs:
           name: benchmark-results
           path: benchmark-results.txt
           if-no-files-found: error
-

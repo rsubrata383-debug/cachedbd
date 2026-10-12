@@ -126,6 +126,6 @@
   3. The large responses rapidly saturate OS kernel socket buffers, forcing replies to accumulate in the server's `WriteQueue` and deterministically triggering user-space backpressure pauses (`backpressure_pauses >= 1`).
   4. The client then reads all responses in order, verifying request IDs and payloads, and joins background sender threads.
 
-### Telemetry Counters & `connections_closed`
+### Telemetry Counters & `connections_closed` / `nodelay_failures`
 - `ServerStats.connections_closed`: Monotonically increasing `AtomicU64` counter incremented whenever a client connection is terminated and removed from the server for any reason (clean client quit, EOF completion, protocol error, disconnect, or idle sweep).
-
+- `ServerStats.nodelay_failures`: Monotonically increasing `AtomicU64` counter incremented whenever setting `TCP_NODELAY` on an accepted client connection fails (the connection continues without crashing).

@@ -739,3 +739,50 @@ fn test_malformed_hello_payload_rejected_with_1006_and_closed() {
     let mut client = Client::connect(server.addr()).expect("subsequent client connect");
     assert_eq!(client.ping().expect("subsequent client ping"), "pong");
 }
+
+/// Verifies that pipelined batches do not suffer the ~40 ms Nagle + delayed-ACK stall.
+///
+/// Prior to enabling `TCP_NODELAY` on server-accepted sockets, each pipelined batch of
+/// small replies caused the server kernel to transmit the first frame and hold subsequent
+/// replies waiting for an ACK under Nagle's algorithm, while the client kernel delayed its
+/// ACK by ~40 ms. 200 batches of 16 commands would take ~8 seconds.
+///
+/// With `TCP_NODELAY` enabled on both ends, 200 batches of 16 pipelined `ping` commands
+/// execute in well under 1 second. We assert a generous bound of 3 seconds to avoid CI noise.
+#[test]
+fn test_pipelined_pings_no_nagle_delayed_ack_stall() {
+    let mut server = TestServer::start();
+    let mut client = Client::connect(server.addr()).expect("client connect");
+
+    let ping_batch: Vec<Vec<Value>> = (0..16)
+        .map(|_| vec![Value::Text("ping".to_string())])
+        .collect();
+
+    let start = Instant::now();
+    for _ in 0..200 {
+        let replies = client
+            .pipeline(ping_batch.clone())
+            .expect("pipeline batch must succeed");
+        assert_eq!(replies.len(), 16);
+        for reply in replies {
+            assert_eq!(
+                reply.expect("ping command reply must be Ok"),
+                Value::Text("pong".to_string())
+            );
+        }
+    }
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "pipelined batches took {elapsed:?}, expected under 3s without Nagle/delayed-ACK stall"
+    );
+
+    assert_eq!(
+        server.stats().nodelay_failures.load(Ordering::Relaxed),
+        0,
+        "nodelay_failures counter must be 0"
+    );
+
+    server.stop();
+}
