@@ -13,7 +13,7 @@ pub const MAX_CLIENT_NAME_LEN: usize = 1024;
 pub struct HelloRequest {
     /// Client's protocol version (must be `1` in v0.1).
     pub protocol_version: i64,
-    /// Client library name and version (e.g. `"cachedb-cli 0.1.0"`).
+    /// Client library name and version (e.g. `"skiff-cli 0.1.0"`).
     pub client_name: String,
     /// Optional authentication credentials or token.
     pub auth_token: Option<String>,
@@ -97,7 +97,7 @@ impl HelloRequest {
 /// Connection handshake response payload returned by the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HelloResponse {
-    /// Server name (e.g. `"cachedbd"`).
+    /// Server name (e.g. `"skiffd"`).
     pub server_name: String,
     /// Server software version (e.g. `"0.1.0"`).
     pub server_version: String,
@@ -214,7 +214,7 @@ impl HelloResponse {
         };
 
         Ok(Self {
-            server_name: server_name.unwrap_or_else(|| "cachedbd".to_string()),
+            server_name: server_name.unwrap_or_else(|| "skiffd".to_string()),
             server_version,
             protocol_version,
             client_id,

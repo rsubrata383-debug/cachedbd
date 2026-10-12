@@ -5,7 +5,7 @@
 //!
 //! # Safety Invariants
 //!
-//! To keep the rest of the Cachedb codebase 100% safe Rust, all FFI declarations and
+//! To keep the rest of the SkiffDB codebase 100% safe Rust, all FFI declarations and
 //! `unsafe` blocks are strictly quarantined within this module. Every `unsafe` block
 //! contains an explicit `// SAFETY:` comment justifying why it is sound.
 

@@ -364,9 +364,10 @@ impl TestBlockingServer {
     ) {
         use skiffdb::cmd::dispatch::Session;
         use skiffdb::cmd::request::handle_request;
-        use skiffdb::proto::Decoded;
         use skiffdb::proto::decode::decode_frame;
         use skiffdb::proto::encode::encode_frame;
+        use skiffdb::proto::header::{FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
+        use skiffdb::proto::{Decoded, Frame, Value};
         use std::io::{Read, Write};
         use std::time::Duration;
 
@@ -397,7 +398,21 @@ impl TestBlockingServer {
                         }
                     }
                     Ok(Decoded::NeedMore) => break,
-                    Err(_) => return,
+                    Err(proto_err) => {
+                        let header = Header::new(FLAG_RESPONSE | FLAG_ERROR, 0, Opcode::Command, 0);
+                        let err_frame = Frame::new(
+                            header,
+                            Value::Error {
+                                code: proto_err.code(),
+                                message: proto_err.message().to_string(),
+                            },
+                        );
+                        let mut out = Vec::new();
+                        if encode_frame(&err_frame, &mut out).is_ok() {
+                            let _ = stream.write_all(&out);
+                        }
+                        return;
+                    }
                 }
             }
 

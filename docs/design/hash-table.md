@@ -1,16 +1,16 @@
 # Hash Table Architecture and Design (Week 6 Step 1)
 
-This document describes the design and invariants of Cachedb's scratch-built in-memory hash table.
+This document describes the design and invariants of SkiffDB's scratch-built in-memory hash table.
 
 ---
 
 ## 1. Overview and Requirements
 
-Cachedb is an in-memory key-value database. Its primary keyspace table must be fast, memory-compact, deterministic, and predictable under high load.
+SkiffDB is an in-memory key-value database. Its primary keyspace table must be fast, memory-compact, deterministic, and predictable under high load.
 
 Key design attributes:
 - **Location**: `src/store/` with `mod.rs`, `hash.rs`, `table.rs`.
-- **Keys**: `Box<[u8]>`. In Cachedb, keys are arbitrary binary byte buffers. Storing keys as `Box<[u8]>` avoids unnecessary capacity overhead compared to `Vec<u8>`.
+- **Keys**: `Box<[u8]>`. In SkiffDB, keys are arbitrary binary byte buffers. Storing keys as `Box<[u8]>` avoids unnecessary capacity overhead compared to `Vec<u8>`.
 - **Values**: Generic `RobinHoodTable<V>`. This allows unit tests and property tests to store lightweight types (e.g. `u64`), while the production engine stores `proto::Value`.
 - **Single-Threaded**: Per `docs/design/threading.md`, the table is owned strictly by a single thread (the shard owner). It contains zero locks, zero mutexes, and zero atomic synchronization primitives.
 

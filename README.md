@@ -46,7 +46,7 @@ Target workloads include:
 
 ## Project Status & Roadmap
 
-Progress is tracked through the milestone checklist in [`cachedb-roadmap.md`](cachedb-roadmap.md) and detailed design decisions in [`docs/journal.md`](docs/journal.md).
+Progress is tracked through the milestone checklist in [`skiffdb-roadmap.md`](skiffdb-roadmap.md) and detailed design decisions in [`docs/journal.md`](docs/journal.md).
 
 | Phase       | Milestone                          |  Status  | Key Deliverables                                                                             |
 | :---------- | :--------------------------------- | :------: | :------------------------------------------------------------------------------------------- |
@@ -63,13 +63,13 @@ Progress is tracked through the milestone checklist in [`cachedb-roadmap.md`](ca
 ## Repository Layout
 
 ```text
-cachedb/
+skiffdb/
 ├── Cargo.toml                  # Project metadata, lints, dependencies
 ├── README.md                   # Project overview and developer guide
 ├── LICENSE-MIT                 # MIT license
 ├── LICENSE-APACHE              # Apache 2.0 license
 ├── AGENTS.md                   # Rust engineering guidelines and coding rules
-├── cachedb-roadmap.md          # Multi-phase project roadmap and checklist
+├── skiffdb-roadmap.md          # Multi-phase project roadmap and checklist
 ├── docs/
 │   ├── journal.md              # Architectural decisions and design log
 │   ├── design/                 # High-level architecture decisions
@@ -239,7 +239,7 @@ cargo doc --no-deps
 
 ## Documentation Index
 
-- **Roadmap & Tracking**: [`cachedb-roadmap.md`](cachedb-roadmap.md)
+- **Roadmap & Tracking**: [`skiffdb-roadmap.md`](skiffdb-roadmap.md)
 - **Design Journal**: [`docs/journal.md`](docs/journal.md)
 - **Frozen Specifications (v0.1)**:
   - [Wire Protocol Specification](docs/spec/protocol.md)

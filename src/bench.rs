@@ -32,25 +32,36 @@ Options:
   --json                 Output results as a single JSON line
   -h, --help             Print help information";
 
-/// Default non-zero fallback seed used when 0 is passed to [`XorShift64::new`].
-pub const FALLBACK_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+/// Error returned when initializing [`XorShift64`] or deriving a seed with an invalid value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidSeedError;
+
+impl fmt::Display for InvalidSeedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "xorshift64 seed must not be zero")
+    }
+}
+
+impl std::error::Error for InvalidSeedError {}
 
 /// Deterministic 64-bit XorShift pseudorandom number generator strictly
 /// conforming to AGENTS.md rule 11.1.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct XorShift64 {
     state: u64,
 }
 
 impl XorShift64 {
-    /// Creates a new generator with the given seed.
+    /// Creates a new generator with the given non-zero seed.
     ///
-    /// If `seed == 0`, a deterministic non-zero fallback constant (`0x9E37_79B9_7F4A_7C15`)
-    /// is used instead to guarantee a valid non-zero internal state without panicking.
-    #[must_use]
-    pub fn new(seed: u64) -> Self {
-        let state = if seed == 0 { FALLBACK_SEED } else { seed };
-        Self { state }
+    /// # Errors
+    ///
+    /// Returns [`InvalidSeedError`] if `seed == 0` (zero state is prohibited).
+    pub fn new(seed: u64) -> Result<Self, InvalidSeedError> {
+        if seed == 0 {
+            return Err(InvalidSeedError);
+        }
+        Ok(Self { state: seed })
     }
 
     /// Emits the next pseudorandom 64-bit word.
@@ -68,14 +79,14 @@ impl XorShift64 {
     /// Extracts high-order bits (`>> 32`) and computes modulo on wide `u64`
     /// before casting to `usize`. Note: accepts `% diff` modulo bias for performance.
     ///
-    /// If `min >= max`, returns `min` without panicking.
-    pub fn gen_range(&mut self, min: usize, max: usize) -> usize {
+    /// Returns `None` if `min >= max` (empty or inverted interval).
+    pub fn gen_range(&mut self, min: usize, max: usize) -> Option<usize> {
         if min >= max {
-            return min;
+            return None;
         }
         let diff = (max - min) as u64;
         let offset = ((self.next_u64() >> 32) % diff) as usize;
-        min + offset
+        Some(min + offset)
     }
 
     /// Returns a pseudorandom percentage in half-open range `[0, 100)`.
@@ -91,15 +102,22 @@ impl XorShift64 {
 
 /// Derives a deterministic, guaranteed non-zero pseudorandom seed for worker threads.
 ///
-/// Combines the base seed and thread index using an odd multiplier and odd offset
-/// to ensure the resulting seed is never 0 for any valid base seed. If the derived
-/// value would ever be 0, falls back to [`FALLBACK_SEED`].
-#[must_use]
-pub fn thread_seed(base: u64, thread_idx: usize) -> u64 {
+/// Combines the base seed and thread index using an odd multiplier and odd offset.
+///
+/// # Errors
+///
+/// Returns [`InvalidSeedError`] if `base == 0` or if the derived state wraps to 0.
+pub fn thread_seed(base: u64, thread_idx: usize) -> Result<u64, InvalidSeedError> {
+    if base == 0 {
+        return Err(InvalidSeedError);
+    }
     let derived = base
         .wrapping_mul(0x517c_c1b7_2722_0a95)
         .wrapping_add(((thread_idx as u64) + 1) * 2 + 1);
-    if derived == 0 { FALLBACK_SEED } else { derived }
+    if derived == 0 {
+        return Err(InvalidSeedError);
+    }
+    Ok(derived)
 }
 
 /// Computes throughput in operations per second.
@@ -504,7 +522,7 @@ pub fn generate_batch(
     let mut batch = Vec::with_capacity(batch_size);
 
     for _ in 0..batch_size {
-        let key_idx = rng.gen_range(0, keys);
+        let key_idx = rng.gen_range(0, keys).unwrap_or(0);
         match workload {
             Workload::Read => {
                 if rng.gen_percent() < 95 {
@@ -746,8 +764,30 @@ fn run_worker(
     warmup_duration: Duration,
     measure_duration: Duration,
 ) -> WorkerResult {
-    let s = thread_seed(cfg.seed, thread_idx);
-    let mut rng = XorShift64::new(s);
+    let s = match thread_seed(cfg.seed, thread_idx) {
+        Ok(seed) => seed,
+        Err(e) => {
+            return WorkerResult {
+                ops: 0,
+                errors: 0,
+                duration: Duration::ZERO,
+                histogram: Histogram::new(),
+                error: Some(format!("worker {thread_idx} seed error: {e}")),
+            };
+        }
+    };
+    let mut rng = match XorShift64::new(s) {
+        Ok(r) => r,
+        Err(e) => {
+            return WorkerResult {
+                ops: 0,
+                errors: 0,
+                duration: Duration::ZERO,
+                histogram: Histogram::new(),
+                error: Some(format!("worker {thread_idx} rng error: {e}")),
+            };
+        }
+    };
 
     let mut client = match Client::connect(&cfg.addr) {
         Ok(c) => c,
@@ -908,27 +948,25 @@ mod tests {
     }
 
     #[test]
-    fn test_xor_shift_zero_seed_uses_fallback() {
-        let mut rng = XorShift64::new(0);
-        let val1 = rng.next_u64();
-        let val2 = rng.next_u64();
-        assert_ne!(val1, 0);
-        assert_ne!(val2, 0);
-        assert_ne!(val1, val2);
+    fn test_xor_shift_zero_seed_rejected() {
+        assert_eq!(XorShift64::new(0), Err(InvalidSeedError));
+        assert_eq!(thread_seed(0, 0), Err(InvalidSeedError));
     }
 
     #[test]
     fn test_xor_shift_gen_range_empty_or_inverted() {
-        let mut rng = XorShift64::new(1234);
-        assert_eq!(rng.gen_range(10, 10), 10);
-        assert_eq!(rng.gen_range(20, 10), 20);
+        let mut rng = XorShift64::new(1234).expect("valid seed");
+        assert_eq!(rng.gen_range(10, 10), None);
+        assert_eq!(rng.gen_range(20, 10), None);
+        let val = rng.gen_range(10, 20);
+        assert!(matches!(val, Some(v) if (10..20).contains(&v)));
     }
 
     #[test]
     fn test_thread_seeds_never_zero() {
         for base in 1..=1000 {
             for tid in 0..64 {
-                let s = thread_seed(base, tid);
+                let s = thread_seed(base, tid).expect("valid base seed");
                 assert_ne!(s, 0, "thread seed was 0 for base {base}, tid {tid}");
             }
         }
@@ -1092,7 +1130,7 @@ mod tests {
 
     #[test]
     fn test_workload_distribution_read() {
-        let mut rng = XorShift64::new(42);
+        let mut rng = XorShift64::new(42).expect("valid seed");
         let batch = generate_batch(&mut rng, Workload::Read, 10_000, 1_000, &[0u8; 16]);
         let fetches = batch
             .iter()
@@ -1112,7 +1150,7 @@ mod tests {
 
     #[test]
     fn test_workload_distribution_write() {
-        let mut rng = XorShift64::new(42);
+        let mut rng = XorShift64::new(42).expect("valid seed");
         let batch = generate_batch(&mut rng, Workload::Write, 1_000, 1_000, &[0u8; 16]);
         assert!(
             batch
@@ -1123,7 +1161,7 @@ mod tests {
 
     #[test]
     fn test_workload_distribution_bump() {
-        let mut rng = XorShift64::new(42);
+        let mut rng = XorShift64::new(42).expect("valid seed");
         let batch = generate_batch(&mut rng, Workload::Bump, 1_000, 1_000, &[0u8; 16]);
         assert!(
             batch
@@ -1134,7 +1172,7 @@ mod tests {
 
     #[test]
     fn test_workload_distribution_mixed() {
-        let mut rng = XorShift64::new(12345);
+        let mut rng = XorShift64::new(12345).expect("valid seed");
         let batch = generate_batch(&mut rng, Workload::Mixed, 20_000, 1_000, &[0u8; 16]);
 
         let mut fetches: u32 = 0;

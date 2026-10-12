@@ -1,12 +1,12 @@
-# Cachedb Threading and Concurrency Model
+# SkiffDB Threading and Concurrency Model
 
-This document defines the threading model, component boundaries, testability abstractions, and platform strategy for Cachedb.
+This document defines the threading model, component boundaries, testability abstractions, and platform strategy for SkiffDB.
 
 ---
 
 ## 1. Core Rule: One Thread Owns the Data
 
-Cachedb follows a strict single-threaded core architecture:
+SkiffDB follows a strict single-threaded core architecture:
 - **One thread owns the entire in-memory keyspace.**
 - **No shared mutexes or locks on stored data**: Commands execute sequentially on the main thread.
 - **Atomicity by construction**: Every command is atomic because no other thread can read or modify the keyspace while a command is running.
@@ -94,7 +94,7 @@ Because one thread runs all commands sequentially, a slow command blocks the ent
 
 ## 8. Final Architectural Decisions
 
-The following architectural choices govern Cachedb implementation:
+The following architectural choices govern SkiffDB implementation:
 
 ### Decision 1: Handling `unsafe` and Linux `epoll` Syscalls
 - **Choice**: Encapsulated `libc` FFI inside a dedicated `src/net/sys.rs` module.

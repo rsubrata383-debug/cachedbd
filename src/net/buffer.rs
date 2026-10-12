@@ -1167,15 +1167,15 @@ mod tests {
     fn test_write_queue_property_random_coalesce_and_partial_writes() -> io::Result<()> {
         use crate::bench::XorShift64;
 
-        let mut rng = XorShift64::new(0x1234_5678_9ABC_DEF1);
+        let mut rng = XorShift64::new(0x1234_5678_9ABC_DEF1).expect("valid seed");
 
         for _ in 0..200 {
             let mut wq = WriteQueue::new();
             let mut expected = Vec::new();
 
-            let num_pushes = rng.gen_range(1, 10);
+            let num_pushes = rng.gen_range(1, 10).unwrap_or(1);
             for _ in 0..num_pushes {
-                let size = rng.gen_range(0, 100_001);
+                let size = rng.gen_range(0, 100_001).unwrap_or(0);
                 let mut chunk = Vec::with_capacity(size);
                 for i in 0..size {
                     chunk.push((i % 251) as u8);
@@ -1186,7 +1186,7 @@ mod tests {
 
             assert_eq!(wq.len(), expected.len());
 
-            let write_limit = rng.gen_range(1, 65537);
+            let write_limit = rng.gen_range(1, 65537).unwrap_or(1);
             let mut writer = StepWriter {
                 limit: write_limit,
                 output: Vec::new(),

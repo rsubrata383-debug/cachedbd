@@ -1,6 +1,6 @@
 # Command Dispatcher and Execution Architecture (Week 7 Step 1)
 
-This document describes the design, dispatching lifecycle, and validation invariants of Cachedb's command processing layer (`src/cmd/`).
+This document describes the design, dispatching lifecycle, and validation invariants of SkiffDB's command processing layer (`src/cmd/`).
 
 ---
 

@@ -33,4 +33,3 @@ fn main() {
     let code = run(config, stdin.lock(), &mut stdout, &mut stderr, is_terminal);
     process::exit(code);
 }
-

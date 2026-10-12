@@ -62,7 +62,7 @@ pub const MAX_NESTING_DEPTH: usize = 8;
 /// Maximum initial allocation capacity for incoming collections to prevent OOM amplification.
 const MAX_INITIAL_COLLECTION_CAPACITY: usize = 1024;
 
-/// An owned typed value representing a payload item in the Cachedb protocol.
+/// An owned typed value representing a payload item in the SkiffDB protocol.
 #[derive(Debug, Clone)]
 pub enum Value {
     /// Missing or null value (`0x00`).

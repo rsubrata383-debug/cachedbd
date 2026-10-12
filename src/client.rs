@@ -303,7 +303,7 @@ pub const PIPELINE_CHUNK_COMMANDS: usize = 256;
 /// Maximum cumulative encoded frame bytes sent in a single pipelined transmission chunk (256 KB).
 pub const PIPELINE_CHUNK_BYTES: usize = 256 * 1024;
 
-/// Synchronous, blocking client connection to a Cachedb server.
+/// Synchronous, blocking client connection to a SkiffDB server.
 #[derive(Debug)]
 pub struct Client {
     stream: TcpStream,
@@ -317,7 +317,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connects to a Cachedb server at `addr` using default configuration.
+    /// Connects to a SkiffDB server at `addr` using default configuration.
     ///
     /// # Errors
     ///
@@ -339,7 +339,7 @@ impl Client {
         Self::connect_with(addr, ClientConfig::default())
     }
 
-    /// Connects to a Cachedb server at `addr` using custom [`ClientConfig`].
+    /// Connects to a SkiffDB server at `addr` using custom [`ClientConfig`].
     ///
     /// # Errors
     ///

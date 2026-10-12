@@ -17,7 +17,7 @@ pub enum Decoded<T> {
     Complete(T),
 }
 
-/// A complete Cachedb wire protocol frame consisting of a 14-byte header and a typed payload.
+/// A complete SkiffDB wire protocol frame consisting of a 14-byte header and a typed payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
     /// 14-byte wire protocol header.

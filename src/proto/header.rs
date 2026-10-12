@@ -1,6 +1,6 @@
 //! Fixed 14-byte binary wire protocol frame header encoding and decoding.
 //!
-//! Every Cachedb protocol frame begins with this fixed-length header in
+//! Every SkiffDB protocol frame begins with this fixed-length header in
 //! Network Byte Order (Big-Endian):
 //!
 //! ```text

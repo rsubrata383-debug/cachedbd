@@ -1,8 +1,8 @@
-# Command-Line Interface (`cachedb-cli`) Design
+# Command-Line Interface (`skiff-cli`) Design
 
 ## 1. Architectural Overview
 
-`cachedb-cli` is the official command-line client utility for Cachedb. It provides two operational modes:
+`skiff-cli` is the official command-line client utility for SkiffDB. It provides two operational modes:
 1. **One-shot Mode**: Executes a single command passed via positional command-line arguments, writes the formatted result, and immediately terminates.
 2. **Interactive REPL Mode**: Enters an interactive line-based read-eval-print loop with human-friendly output formatting, connection banner, and built-in control commands.
 
@@ -13,9 +13,9 @@ The CLI is implemented strictly using standard library facilities (`std::io`, `s
 ## 2. Command-Line Options & Usage
 
 ```text
-cachedb-cli [OPTIONS] [COMMAND [ARGS...]]
+skiff-cli [OPTIONS] [COMMAND [ARGS...]]
 
-A command-line interface for cachedb.
+A command-line interface for SkiffDB.
 
 Options:
   --host <addr>    Server host address (default: 127.0.0.1)
@@ -93,7 +93,7 @@ Matching standard Redis-cli conventions:
 
 ## 5. REPL Behavior & Terminal Integration
 
-- **Interactive Detection**: Prompt (`cachedb> `) and banner (`connected to <name> <version> at <addr>`) are displayed only when standard input is an interactive terminal (`std::io::IsTerminal`).
+- **Interactive Detection**: Prompt (`skiff> `) and banner (`connected to <name> <version> at <addr>`) are displayed only when standard input is an interactive terminal (`std::io::IsTerminal`).
 - **Piped Inputs**: Automated pipelines or redirected standard input bypass banners and prompts, writing only results to `stdout` and errors to `stderr`.
 - **Built-in Commands**:
   - `help`: Emits detailed command usage and flag syntax locally.

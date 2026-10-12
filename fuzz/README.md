@@ -1,6 +1,6 @@
-# Cachedb Fuzzing
+# SkiffDB Fuzzing
 
-Fuzz testing targets for the Cachedb binary wire protocol using `cargo-fuzz` (LLVM libFuzzer).
+Fuzz testing targets for the SkiffDB binary wire protocol using `cargo-fuzz` (LLVM libFuzzer).
 
 > **Platform Notice**: `cargo-fuzz` and LLVM libFuzzer require a Linux or macOS environment.
 > They are **not supported on Windows**. To run fuzzing locally on Windows, use WSL2 or a Linux dev container / GitHub Codespaces, or rely on the automated GitHub Actions CI workflow.

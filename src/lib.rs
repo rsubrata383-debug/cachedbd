@@ -1,4 +1,4 @@
-//! Cachedb: an in-memory database built from scratch.
+//! SkiffDB: an in-memory database built from scratch.
 
 pub mod admin;
 pub mod bench;

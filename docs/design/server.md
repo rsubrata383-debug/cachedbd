@@ -10,7 +10,7 @@
 7. Support pipelining: process frames sequentially in FIFO arrival order without reordering.
 8. Fallback to `ERR_INTERNAL_ERROR` (7001) if reply frame serialization fails.
 9. Drive incremental migration via `step_migration_tick`, suppressing ticks on table errors.
-10. Exit with informative notice on non-Linux hosts ("cachedbd needs Linux (epoll)").
+10. Exit with informative notice on non-Linux hosts ("skiffd needs Linux (epoll)").
 
 ---
 

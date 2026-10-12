@@ -1,6 +1,6 @@
-# Load Generator Architecture and Design (`cachedb-bench`)
+# Load Generator Architecture and Design (`skiff-bench`)
 
-Architecture overview of the multi-threaded synthetic load generator `cachedb-bench` for evaluating Cachedb throughput and latency profiles.
+Architecture overview of the multi-threaded synthetic load generator `skiff-bench` for evaluating SkiffDB throughput and latency profiles.
 
 ---
 
@@ -8,7 +8,7 @@ Architecture overview of the multi-threaded synthetic load generator `cachedb-be
 
 - **Architecture**: M-client threads connecting over independent TCP streams to the server's single-threaded non-blocking event loop.
 - **Worker Isolation**:
-  - Each thread instantiates a dedicated [`cachedb::client::Client`].
+  - Each thread instantiates a dedicated [`skiffdb::client::Client`].
   - Thread seeds are derived deterministically:
     $$\text{thread\_seed} = (\text{base\_seed} \times \text{0x517c\_c1b7\_2722\_0a95}) + (\text{thread\_idx} + 1) \times 2 + 1$$
     This mathematical transformation guarantees non-zero, distinct seed states for every thread without shared mutable synchronization.

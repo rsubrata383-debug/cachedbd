@@ -28,7 +28,7 @@ use common::{TestBlockingServer, XorShift64};
 use skiffdb::client::{Client, ClientConfig, ClientError};
 use skiffdb::proto::decode::decode_frame;
 use skiffdb::proto::encode::encode_frame;
-use skiffdb::proto::header::{FLAG_RESPONSE, Header, Opcode};
+use skiffdb::proto::header::{FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
 use skiffdb::proto::{Decoded, Frame, Value};
 
 // 1. connect + hello: verifies server_info metadata
@@ -800,4 +800,45 @@ fn test_client_read_buffer_20k_small_replies_and_10mb_reply() {
 
     let fetched = client.fetch(b"big_key").expect("fetch 10mb");
     assert_eq!(fetched, Some(Value::Bytes(payload_10mb)));
+}
+
+// 21. unknown frame opcode returns 2001 ERR_UNKNOWN_COMMAND and closes connection
+#[test]
+fn test_unknown_frame_opcode_returns_2001_and_closes() {
+    let server = TestBlockingServer::start();
+    let mut stream = std::net::TcpStream::connect(server.addr()).expect("connect");
+
+    // Construct raw 14-byte header with unknown opcode 0x0099
+    // magic: 0xCADB (2 bytes), version: 1 (1 byte), flags: 0 (1 byte),
+    // request_id: 12345 (4 bytes BE), opcode: 0x0099 (2 bytes BE), payload_len: 0 (4 bytes BE)
+    let mut raw_frame = Vec::new();
+    raw_frame.extend_from_slice(&[0xCA, 0xDB]);
+    raw_frame.push(1); // version
+    raw_frame.push(0); // flags
+    raw_frame.extend_from_slice(&12345u32.to_be_bytes()); // request_id
+    raw_frame.extend_from_slice(&0x0099u16.to_be_bytes()); // invalid opcode
+    raw_frame.extend_from_slice(&0u32.to_be_bytes()); // payload_len
+
+    stream
+        .write_all(&raw_frame)
+        .expect("write frame with unknown opcode");
+
+    let mut acc = Vec::new();
+    let reply = common::read_one_frame(&mut stream, &mut acc);
+
+    // Verify error code 2001
+    assert_ne!(reply.header.flags & FLAG_ERROR, 0);
+    assert_ne!(reply.header.flags & FLAG_RESPONSE, 0);
+    match reply.payload {
+        Value::Error { code, message } => {
+            assert_eq!(code, 2001);
+            assert_eq!(message, "unknown command");
+        }
+        other => panic!("expected Value::Error, got {other:?}"),
+    }
+
+    // Verify server closed connection
+    let mut buf = [0u8; 16];
+    let n = stream.read(&mut buf).expect("read after close");
+    assert_eq!(n, 0, "expected EOF after error 2001");
 }

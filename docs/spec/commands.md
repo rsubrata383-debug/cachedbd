@@ -258,13 +258,15 @@ Asks the server to close the connection gracefully.
 
 Future commands planned in the roadmap across upcoming phases:
 
-### Phase 1 Remaining (Week 8)
-- `append`, `swap`, `auth`, `use`
+### Phase 1 (Shipped in v0.1.0)
+- Core key-value and server commands: `hello`, `ping`, `put`, `fetch`, `drop`, `has`, `size`, `bump`, `quit`.
 
-### Phase 2: Cache Behavior (Weeks 9-16)
+### Phase 2: Cache Behavior & Value Mutators (Weeks 9-16)
 - `expire`, `expire-at`, `ttl`, `persist`
 - `scan`, `rename`, `copy`, `type`, `random-key`, `wipe`
 - `stats`, `memory`, `slowlog`, `config-get`, `config-set`
+- `append`, `swap`: deferred from Phase 1 to align with general value mutation and type management semantics in Phase 2.
+- `auth`, `use`: deferred from Phase 1 to align with access-control and multi-database features planned alongside config/admin commands in Phase 2.
 
 ### Phase 3: Data Types (Weeks 17-26)
 - **Sequences**: `seq-push-front`, `seq-push-back`, `seq-pop-front`, `seq-pop-back`, `seq-range`, `seq-len`, `seq-trim`

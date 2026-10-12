@@ -1,4 +1,4 @@
-# Cachedb Store Benchmark: RobinHoodTable vs std::collections::HashMap
+# skiffdb Store Benchmark: RobinHoodTable vs std::collections::HashMap
 
 - **Configuration**: 1000000 keys, 1000000 mixed operations
 - **OS**: linux

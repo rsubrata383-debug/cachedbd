@@ -22,7 +22,7 @@
 //! not for digital signatures or password hashing.
 //!
 //! To mitigate HashDoS attacks (where an external attacker submits carefully crafted keys to force
-//! hash collisions and degrade table lookup times to $O(N)$), Cachedb initializes a per-process
+//! hash collisions and degrade table lookup times to $O(N)$), SkiffDB initializes a per-process
 //! random 64-bit seed using [`std::hash::RandomState`]. A caller may also provide a fixed seed for
 //! deterministic unit tests and reproducible benchmarks.
 

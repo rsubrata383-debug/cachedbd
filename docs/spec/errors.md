@@ -46,7 +46,7 @@ The following codes were established in [docs/spec/protocol.md](file:///c:/Users
 
 | Code | Error Name | Message | When it Happens | Closed? |
 |:---:|---|---|---|:---:|
-| **2001** | `ERR_UNKNOWN_COMMAND` | `"unknown command"` | Command verb does not exist | **No** |
+| **2001** | `ERR_UNKNOWN_COMMAND` | `"unknown command"` | Command verb does not exist (or unhandled frame opcode received; for unhandled frame opcode, the connection is closed) | **No** |
 | **2002** | `ERR_WRONG_ARG_COUNT` | `"wrong number of arguments for command"` | Command receives fewer or more arguments than required | **No** |
 | **2003** | `ERR_INVALID_ARGUMENT` | `"invalid argument syntax"` | Argument cannot be parsed into expected target type (e.g. invalid integer) | **No** |
 | **2004** | `ERR_KEY_TOO_LARGE` | `"key exceeds maximum size"` | Key length exceeds `max_key_size` (default 1 KB, configurable) | **No** |

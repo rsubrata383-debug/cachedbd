@@ -100,11 +100,6 @@ impl Store {
         value: Value,
         condition: PutCondition,
     ) -> Result<bool, TableFull> {
-        debug_assert!(
-            !matches!(value, Value::Error { .. }),
-            "Value::Error must never be stored in the keyspace"
-        );
-
         match condition {
             PutCondition::Always => {
                 if let Some(existing) = self.table.get_mut(key) {

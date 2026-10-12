@@ -187,6 +187,8 @@ cachedb/
 
 **Exit criteria:** 100k+ ops/sec on one core with pipelining; no memory leaks under a 1-hour soak test; parser fuzzing clean.
 
+*(Scope note for v0.1: commands `append`, `swap`, `auth`, and `use` are deferred to Phase 2 to focus v0.1 on the 7 core primitives and bump).*
+
 ---
 
 # Phase 2: Cache Behavior (Weeks 9-16)
@@ -545,6 +547,8 @@ Design questions to settle in the spec: byte order, maximum sizes, how errors ca
 | ------------ | ------------------------------------------------------------------------------------------------------ |
 | Connection   | `hello`, `ping`, `auth`, `use`, `quit`                                                                 |
 | Values       | `put`, `fetch`, `drop`, `has`, `size`, `bump`, `append`, `swap`                                        |
+
+*(Note: `append`, `swap`, `auth`, and `use` are deferred to Phase 2 to focus v0.1 on the 7 core primitives and bump).*
 | Expiry       | `expire`, `expire-at`, `ttl`, `persist`                                                                |
 | Keyspace     | `scan`, `rename`, `copy`, `type`, `random-key`, `wipe`                                                 |
 | Sequences    | `seq-push-front`, `seq-push-back`, `seq-pop-front`, `seq-pop-back`, `seq-range`, `seq-len`, `seq-trim` |

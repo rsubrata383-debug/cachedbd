@@ -49,7 +49,7 @@ Every frame begins with a fixed 14-byte header:
 | `version` | 1 byte | u8 | — | Protocol version. Initial version is `1` (`0x01`). |
 | `flags` | 1 byte | Bitfield | — | Message control flags (see Flags section). |
 | `request_id` | 4 bytes | u32 | Big-Endian | Identifier chosen by client to pair responses. Must be `0` for push frames. |
-| `opcode` | 2 bytes | u16 | Big-Endian | Operation identifier (`0x0001` = HELLO, `0x0002` = COMMAND, `0x0003` = PUSH). |
+| `opcode` | 2 bytes | u16 | Big-Endian | Operation identifier (`0x0001` = HELLO, `0x0002` = COMMAND, `0x0003` = PUSH). Unrecognized opcodes return `2001 ERR_UNKNOWN_COMMAND` and close the TCP connection. |
 | `payload_len`| 4 bytes | u32 | Big-Endian | Byte size of the payload following this header. |
 
 ---

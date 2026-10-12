@@ -16,9 +16,9 @@
 
 ## 1. Architectural Overview
 
-The synchronous client library (`cachedb::client::Client`) provides a pure `std`-only, blocking interface to `cachedbd`. It is portable across both Windows and Linux, utilizing `std::net::TcpStream` with configurable socket timeouts.
+The synchronous client library (`skiffdb::client::Client`) provides a pure `std`-only, blocking interface to `skiffd`. It is portable across both Windows and Linux, utilizing `std::net::TcpStream` with configurable socket timeouts.
 
-Communication is strictly framed using the 14-byte wire header specified in `docs/spec/protocol.md` and typed payloads (`cachedb::proto::Value`).
+Communication is strictly framed using the 14-byte wire header specified in `docs/spec/protocol.md` and typed payloads (`skiffdb::proto::Value`).
 
 ## 2. Configuration & Connection Lifecycle
 
@@ -26,7 +26,7 @@ Communication is strictly framed using the 14-byte wire header specified in `doc
   - `connect_timeout: Option<Duration>`: Maximum duration to establish TCP connection (default `None`).
   - `read_timeout: Option<Duration>`: Socket read timeout (default `None`).
   - `write_timeout: Option<Duration>`: Socket write timeout (default `None`).
-  - `client_name: String`: Identification string transmitted during handshake (default `"cachedb-client/0.1.0"`).
+  - `client_name: String`: Identification string transmitted during handshake (default `"skiff-client/0.1.0"`).
   - `max_reply_size: usize`: Maximum allowed reply payload size in bytes (default `64 MB`, matching server limit).
 - Handshake:
   - On `Client::connect` or `Client::connect_with`, the client immediately opens a TCP stream, configures timeouts, and sends an `Opcode::Hello` frame (`protocol_version = 1`).
@@ -55,7 +55,7 @@ Communication is strictly framed using the 14-byte wire header specified in `doc
 - `ClientError` Taxonomy:
   - `Io(std::io::Error)`: Socket read/write or timeout errors.
   - `Protocol(String)`: Framing violations, invalid magic, missing flags, or mismatched `request_id`.
-  - `Server { code: u16, message: String }`: Structured application error returned by `cachedbd`.
+  - `Server { code: u16, message: String }`: Structured application error returned by `skiffd`.
   - `UnexpectedReply(String)`: Typed helper received a `Value` variant incompatible with its contract.
   - `ConnectionClosed`: Socket closed prematurely by the peer (unexpected EOF).
   - `ReplyTooLarge`: Server header declared a `payload_len` exceeding `max_reply_size`.

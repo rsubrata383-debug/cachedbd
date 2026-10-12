@@ -1,4 +1,4 @@
-# Cachedb Design Documents
+# SkiffDB Design Documents
 
 Detailed architecture and design notes.
 

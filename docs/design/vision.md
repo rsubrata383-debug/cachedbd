@@ -1,10 +1,10 @@
-# Cachedb Project Vision
+# SkiffDB Project Vision
 
-This document describes what Cachedb is, what it is for, and what it is not.
+This document describes what SkiffDB is, what it is for, and what it is not.
 
 ## Target Workloads
 
-Cachedb is made for four common workloads:
+SkiffDB is made for four common workloads:
 
 1. **Cache**
    - Fast key-value reads and writes in memory.
@@ -26,7 +26,7 @@ Cachedb is made for four common workloads:
 
 ## Non-Goals
 
-Cachedb does not try to do everything. These are non-goals:
+SkiffDB does not try to do everything. These are non-goals:
 
 - **Not a relational database**: No SQL parser, no table joins, and no multi-table ACID transactions.
 - **Not a document store**: No deep JSON path queries, search indexes, or nested document engines.
