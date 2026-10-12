@@ -1528,3 +1528,33 @@ We formalized the exact coercion and error mapping as follows:
    - SIGINT/SIGTERM handlers and graceful drain sequences across all active client sockets are deferred to Phase 2 operations.
 4. **Connection Idle Timeout**:
    - Connections currently remain open indefinitely until explicit EOF or fatal protocol violation. Heartbeat pings and configurable idle socket timeouts are scheduled for future connection lifecycle milestones.
+
+---
+
+## 2026-10-12: Test 16 Failure Investigation and Event Loop Architecture
+
+- **Date**: 2026-10-12
+- **Scope**: Root cause analysis of `test_16_two_clients_isolation` CI failure, event loop runtime decision, and connection idle timeout tracking.
+
+### 1. Root Cause Analysis: `test_16_two_clients_isolation` Failure (Cause A)
+
+- **Diagnosis**: In `test_16_two_clients_isolation`, the test client `c_bad` transmitted 8 arbitrary bytes (`[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33]`).
+- **Decoder Contract**: In `src/proto/decode.rs`, `decode_frame_with_limits` checks `if buf.len() < HEADER_LEN { return Ok(Decoded::NeedMore); }`. Since `HEADER_LEN` is 14 bytes, the streaming decoder correctly treats 8 bytes as an incomplete header and waits for remaining bytes. It does not inspect magic or report framing errors until at least 14 bytes arrive.
+- **Cause**: Cause (a) — Garbage is shorter than 14 bytes: the server correctly waits for more bytes. The TEST was wrong in expecting immediate socket disconnection on an incomplete 8-byte header fragment without an idle timeout.
+- **Resolution**:
+  - Updated Part 1 of the test to send >= 14 bytes of invalid header data (`[0xDE, 0xAD, ...]`), verifying immediate EOF disconnection upon parsing `ERR_INVALID_MAGIC` (`1004`).
+  - Added Part 2 sending fewer than 14 bytes (8 bytes), asserting that the connection remains open (no EOF within 300 ms) and that concurrent clients continue operating smoothly.
+
+### 2. Decision: No Tokio — Single-Threaded Epoll Event Loop
+
+- **Decision**: No tokio. Single-threaded epoll event loop.
+- **Reasons**:
+  - Atomic commands without locks: Single-threaded execution guarantees command serializability without mutex overhead or locking bugs.
+  - Incremental resize needs one thread: Paced table migration (`RobinHoodTable::step_migration`) mutates internal slot clusters safely without inter-thread data races.
+  - Learning goal: Complete zero-dependency mastery of Linux kernel event polling primitives.
+  - No new crates: Keeps dependency graph minimal, auditable, and fast to compile.
+- **Future speed plan**: Sharding with one loop per core (shared-nothing architecture), or `io_uring` for next-generation kernel asynchronous I/O.
+
+### 3. Idle Timeout for Half-Sent Frames
+
+- "Idle timeout for half-sent frames is deferred." Sockets that send partial frame fragments currently remain open indefinitely until explicit EOF or new data arriving completes the frame header.

@@ -655,15 +655,18 @@ fn test_16_two_clients_isolation() {
     let r_good1 = c_good.read_frame().expect("good client put");
     assert_eq!(r_good1.payload, Value::Bool(true));
 
-    // c_bad sends arbitrary garbage bytes
+    // Part 1: c_bad sends >= 14 bytes of garbage whose first two bytes are not 0xCA 0xDB.
+    // The server decodes the 14-byte header, detects ERR_INVALID_MAGIC (1004), and closes c_bad.
     c_bad
         .stream
-        .write_all(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33])
-        .expect("write garbage");
+        .write_all(&[
+            0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+        ])
+        .expect("write 14 bytes garbage");
     let bad_eof = c_bad.read_frame();
     assert!(
         matches!(bad_eof, Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof),
-        "c_bad must be disconnected"
+        "c_bad must be disconnected after full 14-byte invalid header"
     );
 
     // c_good continues completely unharmed
@@ -680,4 +683,36 @@ fn test_16_two_clients_isolation() {
     c_good.send_command(3, vec![Value::Text("ping".to_string())]);
     let r_good3 = c_good.read_frame().expect("good client ping");
     assert_eq!(r_good3.payload, Value::Text("pong".to_string()));
+
+    // Part 2: New client sends fewer than 14 bytes of garbage (incomplete header).
+    // The server correctly returns NeedMore without reporting an error or closing,
+    // documenting the absence of an idle timeout for half-sent frames.
+    let mut c_partial = Client::new(server.connect());
+    c_partial
+        .stream
+        .write_all(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33])
+        .expect("write 8 bytes partial header");
+
+    // Configure a 300 ms read timeout to verify the server does NOT close the socket
+    c_partial
+        .stream
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .expect("set read timeout");
+
+    let mut probe_buf = [0u8; 1];
+    let read_res = c_partial.stream.read(&mut probe_buf);
+    assert!(
+        matches!(
+            read_res,
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut
+        ),
+        "server must not close connection within 300 ms for incomplete header: got {read_res:?}"
+    );
+
+    // Meanwhile, c_good still operates normally without interruption
+    c_good.send_command(4, vec![Value::Text("ping".to_string())]);
+    let r_good4 = c_good
+        .read_frame()
+        .expect("good client ping after partial header");
+    assert_eq!(r_good4.payload, Value::Text("pong".to_string()));
 }
