@@ -1,7 +1,9 @@
 # cachedb
 
-> **Status: Active Development (Phase 1)**  
+> **Status: Active Development (v0.1.0)**  
 > _cachedb is currently under heavy development and is not yet production-ready. APIs, internal layouts, and wire structures are evolving according to the project roadmap._
+
+v0.1.0 is an early learning release, not production ready. See [docs/benchmarks.md](docs/benchmarks.md) for initial benchmark numbers and the [CHANGELOG](CHANGELOG.md) for release details. Linux is needed for the server (epoll); the client and CLI also build on Windows.
 
 ---
 
@@ -46,15 +48,15 @@ Target workloads include:
 
 Progress is tracked through the milestone checklist in [`cachedb-roadmap.md`](cachedb-roadmap.md) and detailed design decisions in [`docs/journal.md`](docs/journal.md).
 
-| Phase       | Milestone                          |     Status      | Key Deliverables                                                                             |
-| :---------- | :--------------------------------- | :-------------: | :------------------------------------------------------------------------------------------- |
-| **Phase 0** | **Decisions & Design**             |  **Completed**  | Vision, threading model, and frozen `v0.1` specifications.                                   |
-| **Phase 1** | **Week 3: Networking Basics**      |  **Completed**  | Linux `epoll` syscall wrapper, `EventLoop`, non-blocking echo server.                        |
-| **Phase 1** | **Week 4: Buffers & Connections**  |  **Completed**  | `ConnectionTable`, flow-control backpressure, 10,000 idle connection scale test.             |
-| **Phase 1** | **Week 5: Wire Protocol**          |  **Completed**  | Binary frame encode/decode, streaming chunk parser, HELLO negotiation, limits, fuzz testing. |
-| **Phase 1** | **Week 6: Hash Table**             |  **Completed**  | Custom Robin Hood hash table with incremental background resizing.                           |
-| **Phase 1** | **Week 7: Core Commands**          |  **Completed**  | `ping`, `put`, `fetch`, `drop`, `has`, `size`, `bump`.                                       |
-| **Phase 1** | **Week 8: Tooling & v0.1 Release** | **In Progrece** | CLI shell (`cachedb-cli`), bench tool (`cachedb-bench`), v0.1 release tag.                   |
+| Phase       | Milestone                          |  Status  | Key Deliverables                                                                             |
+| :---------- | :--------------------------------- | :------: | :------------------------------------------------------------------------------------------- |
+| **Phase 0** | **Decisions & Design**             | **Done** | Vision, threading model, and frozen `v0.1` specifications.                                   |
+| **Phase 1** | **Week 3: Networking Basics**      | **Done** | Linux `epoll` syscall wrapper, `EventLoop`, non-blocking echo server.                        |
+| **Phase 1** | **Week 4: Buffers & Connections**  | **Done** | `ConnectionTable`, flow-control backpressure, 10,000 idle connection scale test.             |
+| **Phase 1** | **Week 5: Wire Protocol**          | **Done** | Binary frame encode/decode, streaming chunk parser, HELLO negotiation, limits, fuzz testing. |
+| **Phase 1** | **Week 6: Hash Table**             | **Done** | Custom Robin Hood hash table with incremental background resizing.                           |
+| **Phase 1** | **Week 7: Core Commands**          | **Done** | `ping`, `put`, `fetch`, `drop`, `has`, `size`, `bump`.                                       |
+| **Phase 1** | **Week 8: Tooling & v0.1 Release** | **Done** | client library, CLI, server hardening, load generator and first benchmark.                   |
 
 ---
 
@@ -130,6 +132,58 @@ cachedb/
 - **Load Generator & Benchmark**: `cachedb-bench`
 - **Default Port**: `7379`
 - **Primary OS Target**: Linux (kernel `epoll`). Use WSL2 on Windows.
+
+---
+
+## Quick Start
+
+### 1. Build
+
+```bash
+cargo build --release
+```
+
+### 2. Run Server
+
+Start the server daemon (requires Linux / WSL2 for epoll):
+
+```bash
+./target/release/cachedbd --bind 127.0.0.1 --port 7878
+```
+
+### 3. Use the CLI (`cachedb-cli`)
+
+One-shot commands:
+
+```bash
+./target/release/cachedb-cli put mykey "hello world"
+./target/release/cachedb-cli fetch mykey
+./target/release/cachedb-cli bump counter 1
+```
+
+Interactive REPL mode:
+
+```bash
+./target/release/cachedb-cli --host 127.0.0.1 --port 7878
+```
+
+```text
+cachedb> put mykey "hello world"
+"hello world"
+cachedb> fetch mykey
+"hello world"
+cachedb> bump counter 1
+(integer) 1
+cachedb> quit
+```
+
+### 4. Run the Load Generator (`cachedb-bench`)
+
+Run synthetic client workloads using `cachedb-bench`:
+
+```bash
+./target/release/cachedb-bench --addr 127.0.0.1:7878 --workload read --connections 4 --duration 10 --warmup 2 --pipeline 16 --preload
+```
 
 ---
 

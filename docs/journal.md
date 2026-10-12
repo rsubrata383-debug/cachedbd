@@ -1738,3 +1738,28 @@ Otherwise, the chunk is pushed as its own independent queue chunk.
 - **No Vectored I/O (`writev`)**: Avoided OS-specific `writev` syscall complexity.
 - **No Unsafe Code**: All buffer management uses safe standard library `Vec` APIs.
 - **No Protocol or Read-Side Changes**: Wire protocol framing, header encoding, and read buffer parsing remain entirely untouched.
+
+---
+
+## 2026-10-12: Week 8 Step 5 — v0.1.0 Release Preparation
+
+### 1. Release Documentation & Artifacts
+Prepared documentation and operational artifacts for the `v0.1.0` release:
+- **`README.md`**: Updated Phase 1 milestones up through Week 8 to "Done", added a concise "Quick start" section covering build, daemon launch, CLI one-shot / REPL usage, and benchmark invocation, and refined the status notice with links to documentation.
+- **`CHANGELOG.md`**: Added initial changelog summarizing Added components (wire protocol, Robin Hood hash table, command engine, structured errors, epoll server, client library, `cachedb-cli`, `cachedb-bench`, and fuzz/CI tooling), verified Performance profiles, and listed all Known limits.
+- **`docs/release-checklist.md`**: Added a concise human checklist covering CI status, benchmark review, documentation verification, manual roadmap checkbox updates, repository license confirmation, and tag creation (`git tag -a v0.1.0 -m "cachedb v0.1.0"`).
+- **`docs/benchmarks.md`**: Replaced placeholder benchmark tables with real CI measurements gathered across three distinct GitHub Actions runs.
+
+### 2. Real CI Benchmark Measurements (Runs 1–3)
+Network benchmark data was collected from real GitHub Actions execution logs on 4-vCPU `ubuntu-24.04` runners:
+- **Run 1 (before fixes)**: Pipelined read throughput collapsed to 1,560 ops/s due to the ~40 ms Nagle + delayed-ACK stall caused by omitting `TCP_NODELAY` on accepted sockets.
+- **Run 2 (after `TCP_NODELAY`)**: Pipelined reads reached ~162k ops/s, eliminating the 40 ms stall.
+- **Run 3 (after reply coalescing)**: Pipelined reads scaled to ~487k ops/s and bump workloads to ~513k ops/s by coalescing adjacent small reply frames in `WriteQueue` into 64 KiB buffers, reducing write syscall frequency.
+
+### 3. Ideas & Roadmap for Future Iterations
+Identified several high-leverage architectural opportunities for subsequent phases:
+- **Sharding or `io_uring`**: Partitioning the key space across worker threads or transitioning to Linux `io_uring` for asynchronous I/O completion.
+- **Vectored I/O (`writev`)**: Utilizing scatter-gather I/O across `WriteQueue` chunks without intermediate memory copies.
+- **Compact Tag / Fingerprint Array**: Adding a 1-byte control tag table to Robin Hood hash table slots to terminate get-miss probe sequences within a single cache line fetch.
+- **Configurable Memory Limits & Eviction**: Enforcing maximum memory caps with LRU / LFU eviction policies.
+- **Durability & Persistence**: Write-ahead logging (WAL) and background snapshotting.

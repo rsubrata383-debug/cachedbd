@@ -383,10 +383,32 @@ During initial CI benchmark profiling, unpipelined reads (`pipeline 1`) achieved
 
 The table below reflects automated measurements gathered via `.github/workflows/network-bench.yml` (the in-memory store benchmark is run via `.github/workflows/bench.yml`):
 
-| Workload | Pipeline | Connections | Throughput (ops/sec) | Batch Latency p50 | Batch Latency p99 | Batch Latency p99.9 | Batch Latency max |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| Read (95/5) | 16 | 4 | *to be filled from the CI artifact* | *to be filled* | *to be filled* | *to be filled* | *to be filled* |
-| Read (95/5) | 1 | 4 | *to be filled from the CI artifact* | *to be filled* | *to be filled* | *to be filled* | *to be filled* |
-| Write (100% put) | 16 | 4 | *to be filled from the CI artifact* | *to be filled* | *to be filled* | *to be filled* | *to be filled* |
-| Mixed | 16 | 4 | *to be filled from the CI artifact* | *to be filled* | *to be filled* | *to be filled* | *to be filled* |
-| Bump (100% bump) | 16 | 4 | *to be filled from the CI artifact* | *to be filled* | *to be filled* | *to be filled* | *to be filled* |
+Run 3 (after TCP_NODELAY and reply coalescing). Workflow "Network Benchmark", run 38256922998, commit db415110c219a738ed3e48d634305a4f459a5975, runner ubuntu-24.04, 4 vCPU (AMD EPYC 7763), 4 connections, 100000 keys, 64-byte values, warmup 2 s, measure 10 s. Latency is per batch round trip.
+| Workload | Pipeline | Ops/sec | p50 | p99 | p99.9 | max | Errors |
+| read (95% fetch, 5% put) | 16 | 487,458.93 | 0.101 ms | 0.218 ms | 0.276 ms | 3.574 ms | 0 |
+| read (95% fetch, 5% put) | 1 | 51,424.29 | 0.069 ms | 0.132 ms | 0.146 ms | 3.042 ms | 0 |
+| write (100% put) | 16 | 483,867.25 | 0.100 ms | 0.218 ms | 0.239 ms | 1.780 ms | 0 |
+| mixed (50/40/5/5) | 16 | 466,550.34 | 0.103 ms | 0.224 ms | 0.247 ms | 8.653 ms | 0 |
+| bump (100%) | 16 | 513,781.28 | 0.094 ms | 0.206 ms | 0.228 ms | 3.006 ms | 0 |
+
+### History Table
+
+History table (how the numbers changed; machines were different, so compare only inside one row group):
+- **Run 1 (before any fix)**: run 38238708731, commit a07dbe52aea15d442e019829590923d0291f8101, AMD EPYC 9V74, 4 vCPU: read pipeline 16 = 1,560.07 ops/s (p50 41.157 ms); read pipeline 1 = 58,149.97 ops/s (p50 0.054 ms); write p16 = 1,560.35; mixed p16 = 1,560.54; bump p16 = 1,560.37.
+- **Run 2 (after TCP_NODELAY only)**: run 38253277494, commit faffb4c5ed3c5990f866423604de3fd2c2a5e601, AMD EPYC 9V45, 4 vCPU: read p16 = 162,435.88 ops/s (p50 0.301 ms); read p1 = 87,863.00 (p50 0.035 ms); write p16 = 165,902.97; mixed p16 = 163,303.42; bump p16 = 169,086.78.
+- **Run 3 (after reply coalescing)**: run 38256922998, commit db415110c219a738ed3e48d634305a4f459a5975, AMD EPYC 7763, 4 vCPU (details above).
+
+| Workload | Pipeline | Run 1 (before any fix) | Run 2 (after TCP_NODELAY only) | Run 3 (after reply coalescing) |
+| :--- | :---: | :---: | :---: | :---: |
+| read (95% fetch, 5% put) | 16 | 1,560.07 ops/s (p50 41.157 ms) | 162,435.88 ops/s (p50 0.301 ms) | 487,458.93 ops/s (p50 0.101 ms) |
+| read (95% fetch, 5% put) | 1 | 58,149.97 ops/s (p50 0.054 ms) | 87,863.00 ops/s (p50 0.035 ms) | 51,424.29 ops/s (p50 0.069 ms) |
+| write (100% put) | 16 | 1,560.35 ops/s | 165,902.97 ops/s | 483,867.25 ops/s (p50 0.100 ms) |
+| mixed (50/40/5/5) | 16 | 1,560.54 ops/s | 163,303.42 ops/s | 466,550.34 ops/s (p50 0.103 ms) |
+| bump (100%) | 16 | 1,560.37 ops/s | 169,086.78 ops/s | 513,781.28 ops/s (p50 0.094 ms) |
+
+### Notes
+
+- The 40 ms stall (Run 1) was Nagle + delayed ACK: the server did not set TCP_NODELAY.
+- Reply coalescing (Run 3) cut write syscalls: many small replies are now sent in one write.
+- The runner CPU model changed between runs (shared GitHub machines). Pipeline-1 numbers differ between Run 2 and Run 3 mainly because of the different machine; do not read it as a speed change.
+- Client and server run on the same 4-vCPU machine and compete for CPU; numbers are for a guide, not for marketing.
