@@ -16,6 +16,13 @@ use std::collections::HashSet;
 /// Returns key validation errors ([`crate::cmd::ERR_EMPTY_KEY`] 2006, [`crate::cmd::ERR_KEY_TOO_LARGE`] 2004, [`crate::cmd::ERR_INVALID_ARGUMENT`] 2003)
 /// if ANY key is invalid. Zero keys are removed if an error is returned.
 pub fn handle_drop(ctx: &mut Context<'_>, args: &[Value]) -> Result<Value, CmdError> {
+    // Fast path: exactly one key avoids all Vec and HashSet allocations
+    if args.len() == 1 {
+        let key = key_arg_with_limit(&args[0], ctx.config.max_key_size)?;
+        let removed = i64::from(ctx.store.remove(key));
+        return Ok(Value::Int(removed));
+    }
+
     // Phase 1: Validate ALL keys first
     let mut validated_keys = Vec::with_capacity(args.len());
     for arg in args {

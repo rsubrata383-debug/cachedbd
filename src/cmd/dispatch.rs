@@ -4,7 +4,7 @@ use crate::cmd::error::{
     CmdError, ERR_AUTH_REQUIRED, ERR_READONLY_REPLICA, ERR_UNKNOWN_COMMAND, ERR_WRONG_ARG_COUNT,
 };
 use crate::cmd::handlers::{
-    handle_drop, handle_fetch, handle_has, handle_ping, handle_put, handle_size,
+    handle_bump, handle_drop, handle_fetch, handle_has, handle_ping, handle_put, handle_size,
 };
 use crate::cmd::parse::{DEFAULT_MAX_ARGS, DEFAULT_MAX_KEY_SIZE, parse_command};
 use crate::proto::Value;
@@ -101,8 +101,16 @@ pub static REGISTRY: &[CommandEntry] = &[
         flags: CommandFlags::READ,
         handler: handle_size,
     },
+    CommandEntry {
+        name: b"bump",
+        min_args: 1,
+        max_args: Some(2),
+        flags: CommandFlags::WRITE,
+        handler: handle_bump,
+    },
 ];
 
+// linear scan, revisit when registry passes ~20 commands
 /// Looks up a command entry in [`REGISTRY`] by exact byte comparison without case folding.
 #[must_use]
 pub fn lookup_command(verb: &[u8]) -> Option<&'static CommandEntry> {
@@ -179,9 +187,9 @@ pub struct Outcome {
 #[derive(Debug, Default)]
 pub struct Engine {
     /// Active keyspace store.
-    pub store: Store,
+    store: Store,
     /// Active command limits and security configuration.
-    pub config: CmdConfig,
+    config: CmdConfig,
 }
 
 impl Engine {
@@ -198,6 +206,30 @@ impl Engine {
     #[must_use]
     pub const fn with_config(store: Store, config: CmdConfig) -> Self {
         Self { store, config }
+    }
+
+    /// Returns a borrowed reference to the engine's store.
+    #[must_use]
+    pub const fn store(&self) -> &Store {
+        &self.store
+    }
+
+    /// Returns a mutable reference to the engine's store.
+    #[must_use]
+    pub fn store_mut(&mut self) -> &mut Store {
+        &mut self.store
+    }
+
+    /// Returns a borrowed reference to the engine's configuration.
+    #[must_use]
+    pub const fn config(&self) -> &CmdConfig {
+        &self.config
+    }
+
+    /// Returns a mutable reference to the engine's configuration.
+    #[must_use]
+    pub fn config_mut(&mut self) -> &mut CmdConfig {
+        &mut self.config
     }
 
     /// Executes a decoded command request frame against this engine.

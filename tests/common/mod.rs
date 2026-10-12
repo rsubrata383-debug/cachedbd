@@ -44,7 +44,8 @@ impl XorShift64 {
     }
 
     /// Returns a pseudorandom boolean by sampling the most significant bit (MSB).
-    #[expect(dead_code, reason = "Utility method implementing AGENTS.md rule 11.1")]
+    // Allow dead_code because common is included across independent integration test targets.
+    #[allow(dead_code)]
     pub fn gen_bool(&mut self) -> bool {
         (self.next_u64() >> 63) == 1
     }

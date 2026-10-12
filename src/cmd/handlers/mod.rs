@@ -1,5 +1,6 @@
 //! Handlers executing specific database commands.
 
+pub mod bump;
 pub mod drop_cmd;
 pub mod fetch;
 pub mod has;
@@ -7,6 +8,7 @@ pub mod ping;
 pub mod put;
 pub mod size;
 
+pub use bump::{handle_bump, parse_strict_i64};
 pub use drop_cmd::handle_drop;
 pub use fetch::handle_fetch;
 pub use has::handle_has;

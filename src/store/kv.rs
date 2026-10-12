@@ -70,6 +70,11 @@ impl Store {
         self.table.get(key)
     }
 
+    /// Returns a mutable reference to the value associated with `key`, if present.
+    pub fn get_mut(&mut self, key: &[u8]) -> Option<&mut Value> {
+        self.table.get_mut(key)
+    }
+
     /// Retrieves an owned clone of the value stored at `key`, or [`Value::Nil`] if absent.
     ///
     /// # Note
@@ -102,8 +107,12 @@ impl Store {
 
         match condition {
             PutCondition::Always => {
-                let key_box = Box::from(key);
-                self.table.insert(key_box, value)?;
+                if let Some(existing) = self.table.get_mut(key) {
+                    *existing = value;
+                } else {
+                    let key_box = Box::from(key);
+                    self.table.insert(key_box, value)?;
+                }
                 Ok(true)
             }
             PutCondition::OnlyIfAbsent => {
@@ -116,9 +125,8 @@ impl Store {
                 }
             }
             PutCondition::OnlyIfPresent => {
-                if self.table.contains_key(key) {
-                    let key_box = Box::from(key);
-                    self.table.insert(key_box, value)?;
+                if let Some(existing) = self.table.get_mut(key) {
+                    *existing = value;
                     Ok(true)
                 } else {
                     Ok(false)

@@ -3,9 +3,10 @@
 mod common;
 
 use cachedb::cmd::{
-    CmdConfig, ERR_AUTH_REQUIRED, ERR_EMPTY_KEY, ERR_INVALID_ARGUMENT, ERR_KEY_TOO_LARGE,
-    ERR_OUT_OF_MEMORY, ERR_READONLY_REPLICA, ERR_SYNTAX_ERROR, ERR_TOO_MANY_ARGS,
-    ERR_UNKNOWN_COMMAND, ERR_VALUE_TOO_LARGE, ERR_WRONG_ARG_COUNT, Engine, Session,
+    CmdConfig, ERR_AUTH_REQUIRED, ERR_EMPTY_KEY, ERR_INTEGER_OVERFLOW, ERR_INVALID_ARGUMENT,
+    ERR_KEY_TOO_LARGE, ERR_NOT_AN_INTEGER, ERR_OUT_OF_MEMORY, ERR_READONLY_REPLICA,
+    ERR_SYNTAX_ERROR, ERR_TOO_MANY_ARGS, ERR_UNKNOWN_COMMAND, ERR_VALUE_TOO_LARGE,
+    ERR_WRONG_ARG_COUNT, ERR_WRONG_TYPE, Engine, Session, parse_strict_i64,
 };
 use cachedb::proto::Value;
 use cachedb::store::{PutCondition, RobinHoodTable, Store};
@@ -109,10 +110,10 @@ fn test_commands_spec_examples() {
 
     // Request: ["drop", "k1", "k2", "k3"] -> Reply: 2 (if k1, k2 existed, k3 did not)
     let _ = engine
-        .store
+        .store_mut()
         .put(b"k1", Value::Int(10), PutCondition::Always);
     let _ = engine
-        .store
+        .store_mut()
         .put(b"k2", Value::Int(20), PutCondition::Always);
     let req = Value::Array(vec![
         Value::Text("drop".to_string()),
@@ -126,7 +127,9 @@ fn test_commands_spec_examples() {
     // Request: ["size"] -> Reply: Int(42) when 42 keys stored
     for i in 0i64..42i64 {
         let k = format!("k:{i}").into_bytes();
-        let _ = engine.store.put(&k, Value::Int(i), PutCondition::Always);
+        let _ = engine
+            .store_mut()
+            .put(&k, Value::Int(i), PutCondition::Always);
     }
     let req = Value::Array(vec![Value::Text("size".to_string())]);
     assert_eq!(engine.execute(&mut session, &req).reply, Value::Int(42));
@@ -326,7 +329,7 @@ fn test_error_limits_and_sizes() {
 
     // 2005: Value too large
     let mut small_engine = Engine::new();
-    small_engine.config.max_value_size = 10;
+    small_engine.config_mut().max_value_size = 10;
     let req = Value::Array(vec![
         Value::Text("put".to_string()),
         Value::Text("k".to_string()),
@@ -349,7 +352,7 @@ fn test_error_limits_and_sizes() {
 
     // 2007: Too many args
     let mut limited_args_engine = Engine::new();
-    limited_args_engine.config.max_args = 2;
+    limited_args_engine.config_mut().max_args = 2;
     let req = Value::Array(vec![
         Value::Text("drop".to_string()),
         Value::Text("a".to_string()),
@@ -368,7 +371,7 @@ fn test_error_auth_and_readonly() {
 
     // 5001: Auth required
     let mut auth_engine = Engine::new();
-    auth_engine.config.require_auth = true;
+    auth_engine.config_mut().require_auth = true;
     let req = Value::Array(vec![
         Value::Text("fetch".to_string()),
         Value::Text("k".to_string()),
@@ -386,7 +389,7 @@ fn test_error_auth_and_readonly() {
 
     // 6001: Readonly replica
     let mut ro_engine = Engine::new();
-    ro_engine.config.read_only = true;
+    ro_engine.config_mut().read_only = true;
     let req = Value::Array(vec![
         Value::Text("put".to_string()),
         Value::Text("k".to_string()),
@@ -486,7 +489,7 @@ fn test_key_length_and_value_size_boundaries() {
 
     // Value size boundary with small max_value_size
     let mut small_cfg_engine = Engine::new();
-    small_cfg_engine.config.max_value_size = 20;
+    small_cfg_engine.config_mut().max_value_size = 20;
 
     // Exactly 20 bytes -> OK
     let req = Value::Array(vec![
@@ -603,8 +606,8 @@ fn test_case_sensitivity() {
 #[test]
 fn test_order_of_checks() {
     let mut engine = Engine::new();
-    engine.config.require_auth = true;
-    engine.config.read_only = true;
+    engine.config_mut().require_auth = true;
+    engine.config_mut().read_only = true;
     let mut session = Session::new(1); // unauthenticated
 
     // Check 1: Parse error (2008) precedes Unknown Command and Auth
@@ -668,7 +671,7 @@ fn test_table_unchanged_after_error() {
         Value::Text("val1".to_string()),
     ]);
     assert_eq!(engine.execute(&mut session, &req).reply, Value::Bool(true));
-    assert_eq!(engine.store.len(), 1);
+    assert_eq!(engine.store().len(), 1);
 
     // Failed put with invalid condition
     let req = Value::Array(vec![
@@ -681,8 +684,8 @@ fn test_table_unchanged_after_error() {
         engine.execute(&mut session, &req).reply,
         ERR_INVALID_ARGUMENT.to_value()
     );
-    assert_eq!(engine.store.len(), 1);
-    assert!(!engine.store.contains(b"key2"));
+    assert_eq!(engine.store().len(), 1);
+    assert!(!engine.store().contains(b"key2"));
 
     // Failed drop where second key is invalid (empty)
     // Validate ALL keys first: key1 must NOT be dropped!
@@ -695,8 +698,11 @@ fn test_table_unchanged_after_error() {
         engine.execute(&mut session, &req).reply,
         ERR_EMPTY_KEY.to_value()
     );
-    assert_eq!(engine.store.len(), 1);
-    assert_eq!(engine.store.fetch(b"key1"), Value::Text("val1".to_string()));
+    assert_eq!(engine.store().len(), 1);
+    assert_eq!(
+        engine.store().fetch(b"key1"),
+        Value::Text("val1".to_string())
+    );
 }
 
 struct ModelStats {
@@ -704,187 +710,327 @@ struct ModelStats {
     puts_unconditional: usize,
     puts_if_absent: usize,
     puts_if_present: usize,
+    bumps_run: usize,
     drops_run: usize,
     resizes_seen: usize,
 }
 
-fn execute_model_command(
-    engine: &mut Engine,
-    session: &mut Session,
-    ref_map: &mut HashMap<Vec<u8>, Value>,
-    rng: &mut XorShift64,
-    step: usize,
-    key_space_size: usize,
-    stats: &mut ModelStats,
-) {
-    let op_type = rng.gen_range(0, 6);
-    let key_id = rng.gen_range(0, key_space_size);
-    let key_bytes = format!("key:{key_id}").into_bytes();
-    let key_val = Value::Bytes(key_bytes.clone());
-
-    match op_type {
+fn generate_random_model_value(rng: &mut XorShift64, step: usize) -> Value {
+    let val_type = rng.gen_range(0, 5);
+    match val_type {
         0 => {
-            // put (always)
-            let val_int = i64::try_from(step).unwrap_or(0) * 3;
-            let req = Value::Array(vec![
-                Value::Text("put".to_string()),
-                key_val,
-                Value::Int(val_int),
-            ]);
-            let outcome = engine.execute(session, &req);
-            assert_eq!(outcome.reply, Value::Bool(true));
-            ref_map.insert(key_bytes, Value::Int(val_int));
-            stats.puts_unconditional += 1;
+            let n = i64::try_from(step).unwrap_or(0);
+            Value::Int(n)
         }
         1 => {
-            // put nx
-            let val_int = i64::try_from(step).unwrap_or(0) * 5;
-            let req = Value::Array(vec![
-                Value::Text("put".to_string()),
-                key_val,
-                Value::Int(val_int),
-                Value::Text("nx".to_string()),
-            ]);
-            let outcome = engine.execute(session, &req);
-            let already_exists = ref_map.contains_key(&key_bytes);
-            if already_exists {
-                assert_eq!(outcome.reply, Value::Bool(false));
+            if rng.gen_bool() {
+                let n = rng.gen_range(0, 500);
+                Value::Text(format!("{n}"))
             } else {
-                assert_eq!(outcome.reply, Value::Bool(true));
-                ref_map.insert(key_bytes, Value::Int(val_int));
+                Value::Text(format!("val_{step}"))
             }
-            stats.puts_if_absent += 1;
         }
         2 => {
-            // put xx
-            let val_int = i64::try_from(step).unwrap_or(0) * 7;
+            if rng.gen_range(0, 50) == 0 {
+                let size = rng.gen_range(1024, 10240);
+                Value::Bytes(vec![b'x'; size])
+            } else if rng.gen_bool() {
+                let n = rng.gen_range(0, 500);
+                Value::Bytes(format!("{n}").into_bytes())
+            } else {
+                Value::Bytes(format!("val_{step}").into_bytes())
+            }
+        }
+        3 => Value::Bool(rng.gen_bool()),
+        _ => Value::Nil,
+    }
+}
+
+struct ModelContext<'a> {
+    engine: &'a mut Engine,
+    session: &'a mut Session,
+    ref_map: &'a mut HashMap<Vec<u8>, Value>,
+    rng: &'a mut XorShift64,
+    stats: &'a mut ModelStats,
+}
+
+fn execute_model_bump(ctx: &mut ModelContext<'_>, key_bytes: Vec<u8>, key_val: Value) {
+    let (step_val, step_item) = match ctx.rng.gen_range(0, 4) {
+        0 => (1i64, None),
+        1 => {
+            let s = i64::try_from(ctx.rng.gen_range(1, 50)).unwrap_or(1);
+            (s, Some(Value::Int(s)))
+        }
+        2 => {
+            let s = -i64::try_from(ctx.rng.gen_range(1, 50)).unwrap_or(1);
+            (s, Some(Value::Int(s)))
+        }
+        _ => (0i64, Some(Value::Int(0))),
+    };
+
+    let req = match step_item {
+        Some(s) => Value::Array(vec![Value::Text("bump".to_string()), key_val, s]),
+        None => Value::Array(vec![Value::Text("bump".to_string()), key_val]),
+    };
+    let outcome = ctx.engine.execute(ctx.session, &req);
+
+    let expected_reply = match ctx.ref_map.get(&key_bytes) {
+        None => {
+            ctx.ref_map.insert(key_bytes, Value::Int(step_val));
+            Value::Int(step_val)
+        }
+        Some(Value::Int(n)) => match n.checked_add(step_val) {
+            Some(new_n) => {
+                ctx.ref_map.insert(key_bytes, Value::Int(new_n));
+                Value::Int(new_n)
+            }
+            None => ERR_INTEGER_OVERFLOW.to_value(),
+        },
+        Some(Value::Text(s)) => match parse_strict_i64(s.as_bytes()) {
+            Some(n) => match n.checked_add(step_val) {
+                Some(new_n) => {
+                    ctx.ref_map.insert(key_bytes, Value::Int(new_n));
+                    Value::Int(new_n)
+                }
+                None => ERR_INTEGER_OVERFLOW.to_value(),
+            },
+            None => ERR_NOT_AN_INTEGER.to_value(),
+        },
+        Some(Value::Bytes(b)) => match parse_strict_i64(b) {
+            Some(n) => match n.checked_add(step_val) {
+                Some(new_n) => {
+                    ctx.ref_map.insert(key_bytes, Value::Int(new_n));
+                    Value::Int(new_n)
+                }
+                None => ERR_INTEGER_OVERFLOW.to_value(),
+            },
+            None => ERR_NOT_AN_INTEGER.to_value(),
+        },
+        Some(Value::Float(_) | Value::Bool(_) | Value::Nil) => ERR_NOT_AN_INTEGER.to_value(),
+        Some(Value::Array(_) | Value::Map(_) | Value::Error { .. }) => ERR_WRONG_TYPE.to_value(),
+    };
+
+    assert_eq!(outcome.reply, expected_reply);
+    ctx.stats.bumps_run += 1;
+}
+
+fn execute_model_put(
+    ctx: &mut ModelContext<'_>,
+    key_bytes: Vec<u8>,
+    key_val: Value,
+    step: usize,
+    op_type: usize,
+) {
+    let val = generate_random_model_value(ctx.rng, step);
+    match op_type {
+        0 => {
+            let req = Value::Array(vec![Value::Text("put".to_string()), key_val, val.clone()]);
+            let outcome = ctx.engine.execute(ctx.session, &req);
+            assert_eq!(outcome.reply, Value::Bool(true));
+            ctx.ref_map.insert(key_bytes, val);
+            ctx.stats.puts_unconditional += 1;
+        }
+        1 => {
             let req = Value::Array(vec![
                 Value::Text("put".to_string()),
                 key_val,
-                Value::Int(val_int),
-                Value::Text("xx".to_string()),
+                val.clone(),
+                Value::Text("nx".to_string()),
             ]);
-            let outcome = engine.execute(session, &req);
-            let already_exists = ref_map.contains_key(&key_bytes);
-            if already_exists {
+            let outcome = ctx.engine.execute(ctx.session, &req);
+            if let std::collections::hash_map::Entry::Vacant(e) = ctx.ref_map.entry(key_bytes) {
                 assert_eq!(outcome.reply, Value::Bool(true));
-                ref_map.insert(key_bytes, Value::Int(val_int));
+                e.insert(val);
             } else {
                 assert_eq!(outcome.reply, Value::Bool(false));
             }
-            stats.puts_if_present += 1;
+            ctx.stats.puts_if_absent += 1;
+        }
+        2 => {
+            let req = Value::Array(vec![
+                Value::Text("put".to_string()),
+                key_val,
+                val.clone(),
+                Value::Text("xx".to_string()),
+            ]);
+            let outcome = ctx.engine.execute(ctx.session, &req);
+            if let std::collections::hash_map::Entry::Occupied(mut e) = ctx.ref_map.entry(key_bytes)
+            {
+                assert_eq!(outcome.reply, Value::Bool(true));
+                e.insert(val);
+            } else {
+                assert_eq!(outcome.reply, Value::Bool(false));
+            }
+            ctx.stats.puts_if_present += 1;
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn execute_model_drop(ctx: &mut ModelContext<'_>, key_space_size: usize) {
+    let drop_count = ctx.rng.gen_range(1, 4);
+    let mut req_items = vec![Value::Text("drop".to_string())];
+    let mut keys_to_drop = Vec::with_capacity(drop_count);
+    for _ in 0..drop_count {
+        let k_id = ctx.rng.gen_range(0, key_space_size);
+        let k_b = format!("key:{k_id}").into_bytes();
+        let k_item = if ctx.rng.gen_bool() {
+            Value::Text(format!("key:{k_id}"))
+        } else {
+            Value::Bytes(k_b.clone())
+        };
+        req_items.push(k_item);
+        keys_to_drop.push(k_b);
+    }
+
+    let mut expected_removed = 0i64;
+    let mut seen = std::collections::HashSet::new();
+    for k in keys_to_drop {
+        if seen.insert(k.clone()) && ctx.ref_map.remove(&k).is_some() {
+            expected_removed += 1;
+        }
+    }
+
+    let outcome = ctx.engine.execute(ctx.session, &Value::Array(req_items));
+    assert_eq!(outcome.reply, Value::Int(expected_removed));
+    ctx.stats.drops_run += 1;
+}
+
+fn execute_model_command(ctx: &mut ModelContext<'_>, step: usize, key_space_size: usize) {
+    let op_type = ctx.rng.gen_range(0, 7);
+    let key_id = ctx.rng.gen_range(0, key_space_size);
+    let key_bytes = format!("key:{key_id}").into_bytes();
+    let key_val = if ctx.rng.gen_bool() {
+        Value::Text(format!("key:{key_id}"))
+    } else {
+        Value::Bytes(key_bytes.clone())
+    };
+
+    match op_type {
+        0..=2 => {
+            execute_model_put(ctx, key_bytes, key_val, step, op_type);
         }
         3 => {
-            // fetch
             let req = Value::Array(vec![Value::Text("fetch".to_string()), key_val]);
-            let outcome = engine.execute(session, &req);
-            let expected = ref_map.get(&key_bytes).cloned().unwrap_or(Value::Nil);
+            let outcome = ctx.engine.execute(ctx.session, &req);
+            let expected = ctx.ref_map.get(&key_bytes).cloned().unwrap_or(Value::Nil);
             assert_eq!(outcome.reply, expected);
         }
         4 => {
-            // drop (1 to 3 keys)
-            let drop_count = rng.gen_range(1, 4);
-            let mut req_items = vec![Value::Text("drop".to_string())];
-            let mut keys_to_drop = Vec::with_capacity(drop_count);
-            for _ in 0..drop_count {
-                let k_id = rng.gen_range(0, key_space_size);
-                let k_b = format!("key:{k_id}").into_bytes();
-                req_items.push(Value::Bytes(k_b.clone()));
-                keys_to_drop.push(k_b);
-            }
-
-            let mut expected_removed = 0i64;
-            let mut seen = std::collections::HashSet::new();
-            for k in keys_to_drop {
-                if seen.insert(k.clone()) && ref_map.remove(&k).is_some() {
-                    expected_removed += 1;
-                }
-            }
-
-            let outcome = engine.execute(session, &Value::Array(req_items));
-            assert_eq!(outcome.reply, Value::Int(expected_removed));
-            stats.drops_run += 1;
+            execute_model_drop(ctx, key_space_size);
         }
         5 => {
-            // has & size check
             let req_has = Value::Array(vec![Value::Text("has".to_string()), key_val]);
-            let outcome_has = engine.execute(session, &req_has);
+            let outcome_has = ctx.engine.execute(ctx.session, &req_has);
             assert_eq!(
                 outcome_has.reply,
-                Value::Bool(ref_map.contains_key(&key_bytes))
+                Value::Bool(ctx.ref_map.contains_key(&key_bytes))
             );
 
             let req_size = Value::Array(vec![Value::Text("size".to_string())]);
-            let outcome_size = engine.execute(session, &req_size);
-            let expected_size = i64::try_from(ref_map.len()).unwrap_or(0);
+            let outcome_size = ctx.engine.execute(ctx.session, &req_size);
+            let expected_size = i64::try_from(ctx.ref_map.len()).unwrap_or(0);
             assert_eq!(outcome_size.reply, Value::Int(expected_size));
+        }
+        6 => {
+            execute_model_bump(ctx, key_bytes, key_val);
         }
         _ => unreachable!(),
     }
 
-    stats.commands_run += 1;
+    ctx.stats.commands_run += 1;
 }
 
-#[test]
-fn test_model_50k_random_commands() {
+fn run_model_test_seed(seed: u64, num_commands: usize, is_primary: bool) {
     let mut engine = Engine::new();
     let mut session = Session::new(1);
     let mut ref_map: HashMap<Vec<u8>, Value> = HashMap::new();
 
-    let mut rng = XorShift64::new(0xFEED_FACE_CAFE_BABE);
+    let mut rng = XorShift64::new(seed);
     let key_space_size = 4_000;
-    let num_commands = 50_000;
 
     let mut stats = ModelStats {
         commands_run: 0,
         puts_unconditional: 0,
         puts_if_absent: 0,
         puts_if_present: 0,
+        bumps_run: 0,
         drops_run: 0,
         resizes_seen: 0,
     };
-    let mut prev_capacity = engine.store.table().capacity();
+    let mut prev_capacity = engine.store().table().capacity();
+
+    let mut ctx = ModelContext {
+        engine: &mut engine,
+        session: &mut session,
+        ref_map: &mut ref_map,
+        rng: &mut rng,
+        stats: &mut stats,
+    };
 
     for i in 0..num_commands {
-        execute_model_command(
-            &mut engine,
-            &mut session,
-            &mut ref_map,
-            &mut rng,
-            i,
-            key_space_size,
-            &mut stats,
-        );
+        execute_model_command(&mut ctx, i, key_space_size);
 
-        let curr_cap = engine.store.table().capacity();
+        let curr_cap = ctx.engine.store().table().capacity();
         if curr_cap > prev_capacity {
-            stats.resizes_seen += 1;
+            ctx.stats.resizes_seen += 1;
             prev_capacity = curr_cap;
         }
     }
 
     assert_eq!(stats.commands_run, num_commands);
-    assert_eq!(engine.store.len(), ref_map.len());
-    assert!(
-        stats.resizes_seen >= 5,
-        "expected at least 5 resizes, saw {}",
-        stats.resizes_seen
-    );
+    assert_eq!(engine.store().len(), ref_map.len());
+    if is_primary {
+        assert!(
+            stats.resizes_seen >= 5,
+            "expected at least 5 resizes, saw {}",
+            stats.resizes_seen
+        );
+    }
     engine
-        .store
+        .store()
         .check_invariants()
         .expect("invariants must hold after model test");
 
-    println!(
-        "\n[Model Test Summary] commands={}, puts_unconditional={}, puts_if_absent={}, puts_if_present={}, drops={}, resizes_seen={}, final_len={}",
-        stats.commands_run,
-        stats.puts_unconditional,
-        stats.puts_if_absent,
-        stats.puts_if_present,
-        stats.drops_run,
-        stats.resizes_seen,
-        engine.store.len()
-    );
+    for (k, expected_v) in &ref_map {
+        assert_eq!(engine.store().fetch(k), *expected_v);
+    }
+
+    if is_primary {
+        println!(
+            "\n[Model Test Summary seed={seed:#x}] commands={}, puts_unconditional={}, puts_if_absent={}, puts_if_present={}, bumps={}, drops={}, resizes_seen={}, final_len={}",
+            stats.commands_run,
+            stats.puts_unconditional,
+            stats.puts_if_absent,
+            stats.puts_if_present,
+            stats.bumps_run,
+            stats.drops_run,
+            stats.resizes_seen,
+            engine.store().len()
+        );
+    }
+}
+
+#[test]
+fn test_model_random_commands() {
+    // Primary seed: 50,000 commands
+    run_model_test_seed(0xFEED_FACE_CAFE_BABE, 50_000, true);
+
+    // 8 additional seeds: 10,000 commands each per rule 11.1
+    let extra_seeds = [
+        0x1234_5678_9ABC_DEF0,
+        0x9876_5432_10FE_DCBA,
+        0xDEAD_BEEF_CAFE_0001,
+        0x0123_4567_89AB_CDEF,
+        0xA1B2_C3D4_E5F6_0718,
+        0xCAFE_BABE_0123_4567,
+        0x5555_AAAA_5555_AAAA,
+        0x1357_9BDF_2468_ACE0,
+    ];
+
+    for &seed in &extra_seeds {
+        run_model_test_seed(seed, 10_000, false);
+    }
 }
 
 #[test]

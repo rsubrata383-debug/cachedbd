@@ -127,4 +127,22 @@ If the computed payload size exceeds `config.max_value_size` (32 MiB), `put` ret
 Storing `Value::Error` is prohibited and returns `2003` (`ERR_INVALID_ARGUMENT`).
 
 ### Multi-Key Atomicity in `drop`:
-The `drop` command validates **all** keys in its argument list before performing any deletions. If any key is empty, too large, or has an invalid type, execution halts immediately and zero keys are removed from the keyspace.
+The `drop` command validates **all** keys in its argument list before performing any deletions. If any key is empty, too large, or has an invalid type, execution halts immediately and zero keys are removed from the keyspace. Single-key invocations follow an allocation-free fast path.
+
+### Atomic Integer Bumping (`bump`):
+The `bump` command atomically increments or decrements a signed 64-bit integer at a key.
+1. **Arity and Dispatch Flags**:
+   - `min_args: 1`, `max_args: Some(2)`, flags: `CommandFlags::WRITE`.
+2. **Step Argument**:
+   - Optional second argument defaults to `1`.
+   - Must be `Value::Int`; any non-integer type returns `2003` (`ERR_INVALID_ARGUMENT`). Negative and zero steps are supported.
+3. **Missing Key**:
+   - If the key is absent, it initializes at `0` and stores `0 + step` as a `Value::Int`.
+4. **Existing Values & Type Coercion**:
+   - **`Int`**: Added directly with `checked_add(step)`.
+   - **`Text` / `Bytes`**: Parsed as strict base-10 signed integer (optional single `'-'`, digits only, no spaces, no `'+'`, no leading zeros except `"0"`, fits in `i64`). If parsing succeeds, it is stepped and the stored entry is updated to `Value::Int`. If parsing fails, returns `3004` (`ERR_NOT_AN_INTEGER`).
+   - **`Float` / `Bool` / `Nil`**: Returns `3004` (`ERR_NOT_AN_INTEGER`).
+   - **`Array` / `Map`**: Returns `3001` (`ERR_WRONG_TYPE`).
+5. **Overflow Protection & Invariance**:
+   - On integer overflow or underflow beyond `[i64::MIN, i64::MAX]`, returns `3003` (`ERR_INTEGER_OVERFLOW`).
+   - On overflow or any type error, the stored value is guaranteed to remain unchanged. Zero heap cloning occurs on existing values.

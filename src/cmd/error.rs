@@ -96,65 +96,82 @@ pub const ERR_INTERNAL_ERROR: CmdError = CmdError::new(7001, "internal server er
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_error_constants_match_spec_catalog() {
-        let expected: &[(CmdError, u16, &str, bool)] = &[
-            (ERR_UNKNOWN_COMMAND, 2001, "unknown command", false),
-            (
-                ERR_WRONG_ARG_COUNT,
-                2002,
-                "wrong number of arguments for command",
-                false,
-            ),
-            (ERR_INVALID_ARGUMENT, 2003, "invalid argument syntax", false),
-            (ERR_KEY_TOO_LARGE, 2004, "key exceeds maximum size", false),
-            (
-                ERR_VALUE_TOO_LARGE,
-                2005,
-                "value exceeds maximum size",
-                false,
-            ),
-            (ERR_EMPTY_KEY, 2006, "empty key is not allowed", false),
-            (ERR_TOO_MANY_ARGS, 2007, "too many arguments", false),
-            (ERR_SYNTAX_ERROR, 2008, "syntax error", false),
-            (
-                ERR_WRONG_TYPE,
-                3001,
-                "operation against a key holding the wrong kind of value",
-                false,
-            ),
-            (ERR_INTEGER_OVERFLOW, 3003, "integer overflow", false),
-            (ERR_NOT_AN_INTEGER, 3004, "value is not an integer", false),
-            (
-                ERR_OUT_OF_MEMORY,
-                4003,
-                "out of memory: maxmemory limit reached",
-                false,
-            ),
-            (ERR_AUTH_REQUIRED, 5001, "authentication required", false),
-            (
-                ERR_READONLY_REPLICA,
-                6001,
-                "cannot write to read-only replica",
-                false,
-            ),
-            (ERR_INTERNAL_ERROR, 7001, "internal server error", false),
+        let spec_text = include_str!("../../docs/spec/errors.md");
+
+        let all_errors: &[(&str, CmdError)] = &[
+            ("ERR_UNKNOWN_COMMAND", ERR_UNKNOWN_COMMAND),
+            ("ERR_WRONG_ARG_COUNT", ERR_WRONG_ARG_COUNT),
+            ("ERR_INVALID_ARGUMENT", ERR_INVALID_ARGUMENT),
+            ("ERR_KEY_TOO_LARGE", ERR_KEY_TOO_LARGE),
+            ("ERR_VALUE_TOO_LARGE", ERR_VALUE_TOO_LARGE),
+            ("ERR_EMPTY_KEY", ERR_EMPTY_KEY),
+            ("ERR_TOO_MANY_ARGS", ERR_TOO_MANY_ARGS),
+            ("ERR_SYNTAX_ERROR", ERR_SYNTAX_ERROR),
+            ("ERR_WRONG_TYPE", ERR_WRONG_TYPE),
+            ("ERR_INTEGER_OVERFLOW", ERR_INTEGER_OVERFLOW),
+            ("ERR_NOT_AN_INTEGER", ERR_NOT_AN_INTEGER),
+            ("ERR_OUT_OF_MEMORY", ERR_OUT_OF_MEMORY),
+            ("ERR_AUTH_REQUIRED", ERR_AUTH_REQUIRED),
+            ("ERR_READONLY_REPLICA", ERR_READONLY_REPLICA),
+            ("ERR_INTERNAL_ERROR", ERR_INTERNAL_ERROR),
         ];
 
-        for &(err, code, msg, close) in expected {
-            assert_eq!(err.code, code, "error code mismatch for {msg}");
-            assert_eq!(err.message, msg, "error message mismatch for code {code}");
-            assert_eq!(err.close, close, "close flag mismatch for code {code}");
+        let mut spec_entries: HashMap<u16, (String, String, bool)> = HashMap::new();
+
+        for line in spec_text.lines() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with('|') || !trimmed.ends_with('|') {
+                continue;
+            }
+            let parts: Vec<&str> = trimmed
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            let code_str = parts[0].trim_matches('*').trim();
+            let Ok(code) = code_str.parse::<u16>() else {
+                continue;
+            };
+            let name = parts[1].trim_matches('`').trim().to_string();
+            let msg = parts[2]
+                .trim_matches('`')
+                .trim_matches('"')
+                .trim()
+                .to_string();
+            let closed = parts[4].contains("Yes");
+
+            spec_entries.insert(code, (name, msg, closed));
+        }
+
+        for &(name, err) in all_errors {
+            let (spec_name, spec_msg, spec_closed) = spec_entries
+                .get(&err.code)
+                .unwrap_or_else(|| panic!("error code {} not in errors.md", err.code));
+
+            assert_eq!(spec_name, name, "name mismatch for code {}", err.code);
+            assert_eq!(
+                spec_msg, err.message,
+                "message mismatch for code {}",
+                err.code
+            );
+            assert_eq!(
+                *spec_closed, err.close,
+                "close flag mismatch for code {}",
+                err.code
+            );
 
             let val = err.to_value();
             match val {
-                Value::Error {
-                    code: v_code,
-                    message: v_msg,
-                } => {
-                    assert_eq!(v_code, code);
-                    assert_eq!(v_msg, msg);
+                Value::Error { code, message } => {
+                    assert_eq!(code, err.code);
+                    assert_eq!(message, err.message);
                 }
                 _ => panic!("expected Value::Error"),
             }

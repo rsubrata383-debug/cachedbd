@@ -1413,3 +1413,42 @@ Prior to implementation, an audit of the frozen specifications was conducted:
 5. **Memory Copy Overhead on `fetch`**:
    - `fetch` currently returns `self.get(key).cloned().unwrap_or(Value::Nil)`.
    - Cloning duplicates multi-megabyte payloads in heap memory. In future phases, this can be optimized with reference-counted shared byte buffers (`Arc<[u8]>` or `bytes::Bytes`) or zero-copy buffer slicing.
+
+---
+
+## 2026-10-12: Week 7, Step 2 - Atomic Bumping Semantics and Engine Field Encapsulation
+
+### 1. Decision on `bump` Type Coercion & Error Handling
+
+Section 3.8 of `docs/spec/commands.md` specifies that `bump` operates atomically on 64-bit signed integers and states:
+> "If the key exists but holds a value that is not an integer, it returns a type error (3004 `ERR_NOT_AN_INTEGER` for non-integer strings/scalars, or 3001 `ERR_WRONG_TYPE` for non-scalar collections)."
+
+We formalized the exact coercion and error mapping as follows:
+1. **Existing `Text` and `Bytes`**:
+   - Parsed with strict base-10 rules (`parse_strict_i64`):
+     - Optional single leading `'-'` (no `'+'`).
+     - ASCII digits only (`0-9`), no spaces.
+     - No leading zeros except `"0"` itself (`"-0"`, `"01"`, `"-05"` are strictly rejected).
+     - Must fit within `[i64::MIN, i64::MAX]`.
+   - If parsing succeeds:
+     - Value is stepped via `checked_add(step)`.
+     - On overflow/underflow: returns `3003` (`ERR_INTEGER_OVERFLOW`) and stored value remains unchanged.
+     - On success: stored value is updated in-place to `Value::Int(new_n)` (converting from Text/Bytes to Int) and returns `Value::Int(new_n)`.
+   - If parsing fails: returns `3004` (`ERR_NOT_AN_INTEGER`) and stored value remains unchanged.
+2. **Existing `Float`, `Bool`, `Nil`**:
+   - Classified as non-integer scalars. Return `3004` (`ERR_NOT_AN_INTEGER`). The stored value is unchanged.
+3. **Existing `Array` and `Map`**:
+   - Classified as rich non-scalar collections. Return `3001` (`ERR_WRONG_TYPE`). The stored value is unchanged.
+4. **Missing Key**:
+   - Initialized at base `0` and steps by `step` (`0 + step`), storing `Value::Int(step)` in the keyspace. If the table is full, returns `4003` (`ERR_OUT_OF_MEMORY`).
+
+### 2. Allocation & Lookup Optimizations
+1. **`Store::put` Overwrites & `xx` Condition**:
+   - `PutCondition::Always` checks `self.table.get_mut(key)` first. If the key exists, it mutates the value in-place, avoiding heap allocation of `Box::from(key)`.
+   - `PutCondition::OnlyIfPresent` (`xx`) performs a single `self.table.get_mut(key)` lookup, eliminating the previous double lookup (`contains_key` followed by `insert`).
+2. **`handle_drop` Fast Path**:
+   - Single-key drops (`args.len() == 1`) validate the key and invoke `ctx.store.remove(key)` directly, completely bypassing `Vec` and `HashSet` allocations.
+3. **`Engine` Encapsulation**:
+   - Fields `store` and `config` are made private, with accessor methods `store()`, `store_mut()`, `config()`, and `config_mut()`. Existing integration tests have been transitioned to these accessors.
+4. **Spec-Driven Error Constants Verification**:
+   - Replaced hand-typed expected constant lists with direct compile-time inspection of `docs/spec/errors.md` via `include_str!`, dynamically validating codes, names, messages, and close flags.
