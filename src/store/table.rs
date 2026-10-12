@@ -655,6 +655,17 @@ impl<V> RobinHoodTable<V> {
         Ok(self.old_table.is_some())
     }
 
+    /// Performs a single background migration step of [`MIGRATE_BATCH`] buckets.
+    ///
+    /// A failed background migration step is not fatal, both tables stay valid,
+    /// and the next operation retries.
+    fn background_migrate(&mut self) {
+        if self.step_migration(MIGRATE_BATCH).is_err() {
+            // A failed background migration step is not fatal, both tables stay valid,
+            // and the next operation retries.
+        }
+    }
+
     /// Checks if a resize is needed and initiates it.
     ///
     /// # Resize Rules
@@ -739,9 +750,7 @@ impl<V> RobinHoodTable<V> {
     ///
     /// Mutates the table and steps migration by up to [`MIGRATE_BATCH`] (16) buckets.
     pub fn get_mut(&mut self, key: &[u8]) -> Option<&mut V> {
-        if self.step_migration(MIGRATE_BATCH) == Err(TableFull) {
-            // A failed background migration step is not fatal, the tables stay valid, and the next operation retries.
-        }
+        self.background_migrate();
         let hash = hash64(key, self.seed);
         self.get_mut_with_hash(hash, key)
     }
@@ -818,7 +827,7 @@ impl<V> RobinHoodTable<V> {
         value: V,
     ) -> Result<Option<V>, TableFull> {
         // Step 1: Paced migration step
-        self.step_migration(MIGRATE_BATCH)?;
+        self.background_migrate();
 
         // Step 2: Check if key exists in main_table
         let key_in_main = self.main_table.contains_key_with_hash(hash, &key);
@@ -880,9 +889,7 @@ impl<V> RobinHoodTable<V> {
 
     /// Removes an entry by key from both tables, returning the value that was found.
     pub fn remove(&mut self, key: &[u8]) -> Option<V> {
-        if self.step_migration(MIGRATE_BATCH) == Err(TableFull) {
-            // A failed background migration step is not fatal, the tables stay valid, and the next operation retries.
-        }
+        self.background_migrate();
         let hash = hash64(key, self.seed);
         self.remove_with_hash(hash, key)
     }
@@ -1737,6 +1744,55 @@ mod tests {
         table
             .check_invariants()
             .expect("invariants must hold after failed insert restore");
+    }
+
+    #[test]
+    fn test_overwrite_succeeds_when_main_table_at_load_limit_and_old_table_not_empty() {
+        let mut table = RobinHoodTable::new(8, 0x5555);
+        for i in 0..7 {
+            let k = format!("k-{i}").into_bytes().into_boxed_slice();
+            table.insert(k, i * 10).unwrap();
+        }
+        table.insert(Box::from(&b"trigger"[..]), 99).unwrap();
+        assert!(table.is_resizing());
+        assert!(table.old_table.is_some());
+
+        // Fill main_table up to its max load limit: capacity 16, limit = 14 items.
+        // It currently contains 1 item ("trigger"). Insert 13 more items.
+        for i in 0..13 {
+            let k = format!("main-{i}").into_bytes().into_boxed_slice();
+            let h = hash64(&k, table.seed);
+            table
+                .main_table
+                .insert_with_hash(h, k, i * 100)
+                .expect("insert into main_table succeeds");
+        }
+        assert!(table.main_table.is_at_max_load());
+        assert!(table.old_table.as_ref().map_or(0, |o| o.len) > 0);
+
+        // Overwrite existing key in main_table ("main-5").
+        // Background migration fails because main_table is at load limit, but this must not cause
+        // the overwrite to fail since overwriting does not increase main_table load.
+        let target_key = Box::from(&b"main-5"[..]);
+        let res = table.insert(target_key, 9999);
+        assert_eq!(res, Ok(Some(500)));
+        assert_eq!(table.get(b"main-5"), Some(&9999));
+
+        // Ensure no keys were lost from either table
+        for i in 0..7 {
+            let k = format!("k-{i}").into_bytes();
+            assert_eq!(table.get(&k), Some(&(i * 10)), "key k-{i} lost");
+        }
+        assert_eq!(table.get(b"trigger"), Some(&99));
+        for i in 0..13 {
+            let k = format!("main-{i}").into_bytes();
+            let expected = if i == 5 { 9999 } else { i * 100 };
+            assert_eq!(table.get(&k), Some(&expected), "key main-{i} lost");
+        }
+
+        table
+            .check_invariants()
+            .expect("invariants must hold after overwrite at load limit");
     }
 
     enum DifferentialOp {

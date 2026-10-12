@@ -1,0 +1,117 @@
+﻿2026-10-12T02:31:47.8519812Z ##[group]Run KEYS="10000000"
+2026-10-12T02:31:47.8520964Z [36;1mKEYS="10000000"[0m
+2026-10-12T02:31:47.8522178Z [36;1mecho "Running store benchmark with $KEYS keys..."[0m
+2026-10-12T02:31:47.8523993Z [36;1mcargo bench --bench store_bench -- --keys "$KEYS" | tee benchmark-results.txt[0m
+2026-10-12T02:31:47.8525868Z [36;1mcat benchmark-results.txt >> "$GITHUB_STEP_SUMMARY"[0m
+2026-10-12T02:31:47.8590594Z shell: /usr/bin/bash -e {0}
+2026-10-12T02:31:47.8591576Z env:
+2026-10-12T02:31:47.8592383Z   RUST_BACKTRACE: 1
+2026-10-12T02:31:47.8593315Z   CARGO_HOME: /home/runner/.cargo
+2026-10-12T02:31:47.8594360Z   CARGO_INCREMENTAL: 0
+2026-10-12T02:31:47.8595299Z   CARGO_TERM_COLOR: always
+2026-10-12T02:31:47.8596296Z ##[endgroup]
+2026-10-12T02:31:47.8686225Z Running store benchmark with 10000000 keys...
+2026-10-12T02:31:48.0502612Z [1m[92m    Updating[0m crates.io index
+2026-10-12T02:31:48.1388301Z [1m[92m Downloading[0m crates ...
+2026-10-12T02:31:48.2470624Z [1m[92m  Downloaded[0m libc v0.2.190
+2026-10-12T02:31:48.3119429Z [1m[92m   Compiling[0m libc v0.2.190
+2026-10-12T02:31:50.0326814Z [1m[92m   Compiling[0m cachedb v0.1.0 (/home/runner/work/cachedbd/cachedbd)
+2026-10-12T02:31:51.8742786Z [1m[92m    Finished[0m `bench` profile [optimized] target(s) in 3.97s
+2026-10-12T02:31:51.8755966Z [1m[92m     Running[0m benches/store_bench.rs (target/release/deps/store_bench-95c867ac0709ae83)
+2026-10-12T02:31:51.8771446Z # Cachedb Store Benchmark: RobinHoodTable vs std::collections::HashMap
+2026-10-12T02:31:51.8771925Z 
+2026-10-12T02:31:51.8772150Z - **Configuration**: 10000000 keys, 1000000 mixed operations
+2026-10-12T02:31:51.8772613Z - **OS**: linux
+2026-10-12T02:31:51.8772919Z - **Architecture**: x86_64
+2026-10-12T02:31:51.8773469Z - **Repetitions**: 1 warmup run + 3 measured runs (reporting median [min - max])
+2026-10-12T02:31:51.8774226Z - **Allocation Policy**: Strictly 0 allocations inside timed regions
+2026-10-12T02:31:51.8774593Z 
+2026-10-12T02:31:51.8774911Z Pre-generating 10000000 keys and permutation indices (outside timed regions)...
+2026-10-12T02:31:53.6833711Z Datasets ready.
+2026-10-12T02:31:53.6834196Z 
+2026-10-12T02:31:53.6834463Z Measuring baseline floor costs (no table operations)...
+2026-10-12T02:31:55.1640079Z Benchmarking RobinHoodTable<u64> across 6 operations (warmup + 3 runs)...
+2026-10-12T02:33:11.6436435Z Benchmarking std::collections::HashMap across 6 operations (warmup + 3 runs)...
+2026-10-12T02:34:41.1994505Z Measuring table allocation resize-start cost...
+2026-10-12T02:34:43.0156509Z Measuring empty table drop latency...
+2026-10-12T02:34:43.4201105Z 
+2026-10-12T02:34:43.4201796Z ### Throughput & Performance Comparison (Median of 3 Runs)
+2026-10-12T02:34:43.4202370Z 
+2026-10-12T02:34:43.4203148Z | Operation | RobinHoodTable (median) | RobinHoodTable (Mops/s) | std::HashMap (median) | std::HashMap (Mops/s) | Ratio |
+2026-10-12T02:34:43.4204362Z | :--- | :---: | :---: | :---: | :---: | :---: |
+2026-10-12T02:34:43.4205322Z | Floor: loop + key access only | 0.8 ns [0.7 - 0.8] | 1300.59 Mops/s | 0.8 ns [0.7 - 0.8] | 1300.59 Mops/s | **1.00x** |
+2026-10-12T02:34:43.4206672Z | Floor: hash only (hash64) | 16.3 ns [16.3 - 16.5] | 61.43 Mops/s | 19.8 ns [19.8 - 20.0] | 50.41 Mops/s | **1.22x** |
+2026-10-12T02:34:43.4208504Z | Insert (N keys from empty) | 260.0 ns [259.2 - 362.8] | 3.85 Mops/s | 315.9 ns [313.6 - 412.1] | 3.17 Mops/s | **1.22x** |
+2026-10-12T02:34:43.4209648Z | Get hits (random order) | 283.7 ns [283.5 - 286.2] | 3.53 Mops/s | 370.7 ns [370.6 - 375.1] | 2.70 Mops/s | **1.31x** |
+2026-10-12T02:34:43.4210676Z | Get misses | 147.1 ns [147.0 - 148.3] | 6.80 Mops/s | 83.6 ns [82.8 - 92.1] | 11.96 Mops/s | **0.57x** |
+2026-10-12T02:34:43.4211782Z | Overwrite (all keys) | 175.2 ns [171.7 - 175.4] | 5.71 Mops/s | 241.5 ns [235.4 - 243.9] | 4.14 Mops/s | **1.38x** |
+2026-10-12T02:34:43.4212952Z | Mixed (80% get / 15% ins / 5% rem) | 313.2 ns [310.7 - 314.5] | 3.19 Mops/s | 366.7 ns [360.3 - 373.4] | 2.73 Mops/s | **1.17x** |
+2026-10-12T02:34:43.4214062Z | Remove (all keys) | 171.3 ns [169.6 - 171.8] | 5.84 Mops/s | 238.8 ns [232.2 - 240.7] | 4.19 Mops/s | **1.39x** |
+2026-10-12T02:34:43.4215335Z 
+2026-10-12T02:34:43.4215696Z ### Latency Profiles: RobinHoodTable vs std::collections::HashMap
+2026-10-12T02:34:43.4216193Z 
+2026-10-12T02:34:43.4216460Z | Metric | RobinHoodTable | std::collections::HashMap |
+2026-10-12T02:34:43.4217005Z | :--- | :---: | :---: |
+2026-10-12T02:34:43.4218064Z | p50 | 0.191 µs | 0.161 µs |
+2026-10-12T02:34:43.4218569Z | p99 | 0.902 µs | 0.532 µs |
+2026-10-12T02:34:43.4219061Z | p99.9 | 1.823 µs | 0.801 µs |
+2026-10-12T02:34:43.4219571Z | p99.99 | 11.081 µs | 10.780 µs |
+2026-10-12T02:34:43.4220117Z | max | 47328.061 µs | 1055231.885 µs |
+2026-10-12T02:34:43.4220590Z | Ops slower than 1 ms | 14 | 8 |
+2026-10-12T02:34:43.4220882Z 
+2026-10-12T02:34:43.4221026Z ### Top 5 Slowest Inserts: RobinHoodTable
+2026-10-12T02:34:43.4221495Z 
+2026-10-12T02:34:43.4221732Z | Rank | Op Index | Latency (µs) | Tag | Capacity Details |
+2026-10-12T02:34:43.4222064Z | :---: | :---: | :---: | :---: | :--- |
+2026-10-12T02:34:43.4222669Z | 1 | 7340032 | 47328.06 µs | resize started | capacity changed: 8388608 -> 16777216 |
+2026-10-12T02:34:43.4223273Z | 2 | 3670016 | 24621.72 µs | resize started | capacity changed: 4194304 -> 8388608 |
+2026-10-12T02:34:43.4223912Z | 3 | 8323072 | 13882.64 µs | migration finished, old table dropped | capacity unchanged: 16777216 |
+2026-10-12T02:34:43.4224585Z | 4 | 1835008 | 12608.30 µs | resize started | capacity changed: 2097152 -> 4194304 |
+2026-10-12T02:34:43.4225192Z | 5 | 4161536 | 6995.86 µs | migration finished, old table dropped | capacity unchanged: 8388608 |
+2026-10-12T02:34:43.4225537Z 
+2026-10-12T02:34:43.4225673Z ### Inserts Slower Than 1 ms by Tag: RobinHoodTable
+2026-10-12T02:34:43.4225899Z 
+2026-10-12T02:34:43.4225980Z | Tag | Count |
+2026-10-12T02:34:43.4226188Z | :--- | :---: |
+2026-10-12T02:34:43.4226390Z | resize started | 9 |
+2026-10-12T02:34:43.4226645Z | migration finished, old table dropped | 5 |
+2026-10-12T02:34:43.4226939Z | unchanged | 0 |
+2026-10-12T02:34:43.4227074Z 
+2026-10-12T02:34:43.4227512Z ### Top 5 Slowest Inserts: std::collections::HashMap
+2026-10-12T02:34:43.4227753Z 
+2026-10-12T02:34:43.4227952Z | Rank | Op Index | Latency (µs) | Event Description |
+2026-10-12T02:34:43.4228267Z | :---: | :---: | :---: | :--- |
+2026-10-12T02:34:43.4228737Z | 1 | 7340032 | 1055231.89 µs | std::HashMap insert operation #7340032 |
+2026-10-12T02:34:43.4229268Z | 2 | 3670016 | 499540.37 µs | std::HashMap insert operation #3670016 |
+2026-10-12T02:34:43.4229766Z | 3 | 1835008 | 243242.18 µs | std::HashMap insert operation #1835008 |
+2026-10-12T02:34:43.4230250Z | 4 | 917504 | 109528.11 µs | std::HashMap insert operation #917504 |
+2026-10-12T02:34:43.4230738Z | 5 | 458752 | 43339.27 µs | std::HashMap insert operation #458752 |
+2026-10-12T02:34:43.4231006Z 
+2026-10-12T02:34:43.4231154Z ### Resize-Start Allocation Cost (RobinHoodTable::new)
+2026-10-12T02:34:43.4231379Z 
+2026-10-12T02:34:43.4231551Z | Table Capacity | Allocation Size | Creation Latency (Median) |
+2026-10-12T02:34:43.4231900Z | :--- | :---: | :---: |
+2026-10-12T02:34:43.4232140Z | 2^20 (1,048,576 slots, ~42 MB) | 1.94 ms |
+2026-10-12T02:34:43.4232427Z | 2^22 (4,194,304 slots, ~168 MB) | 13.10 ms |
+2026-10-12T02:34:43.4232714Z | 2^24 (16,777,216 slots, ~671 MB) | 48.28 ms |
+2026-10-12T02:34:43.4232909Z 
+2026-10-12T02:34:43.4233037Z ### Empty Table Drop Latency (drop(RobinHoodTable))
+2026-10-12T02:34:43.4233260Z 
+2026-10-12T02:34:43.4233414Z | Table Capacity | Allocation Size | Drop Latency (Median) |
+2026-10-12T02:34:43.4233740Z | :--- | :---: | :---: |
+2026-10-12T02:34:43.4233964Z | 2^20 (1,048,576 slots, ~42 MB) | 1.67 ms |
+2026-10-12T02:34:43.4234279Z | 2^22 (4,194,304 slots, ~168 MB) | 7.32 ms |
+2026-10-12T02:34:43.4234559Z | 2^24 (16,777,216 slots, ~671 MB) | 27.88 ms |
+2026-10-12T02:34:43.4234750Z 
+2026-10-12T02:34:43.4234855Z ### Hash Table Quality & Memory Metrics
+2026-10-12T02:34:43.4235038Z 
+2026-10-12T02:34:43.4235184Z | Metric | RobinHoodTable | std::collections::HashMap |
+2026-10-12T02:34:43.4235681Z | :--- | :---: | :---: |
+2026-10-12T02:34:43.4235898Z | Max PSL | 14 | n/a |
+2026-10-12T02:34:43.4236119Z | Average PSL | 0.74 | n/a |
+2026-10-12T02:34:43.4236406Z | Measured Average Probes per Miss | 2.04 slots | n/a |
+2026-10-12T02:34:43.4236720Z | Final Load Factor | 59.6% | n/a |
+2026-10-12T02:34:43.4236984Z | Table Slot Size | 40 bytes | n/a |
+2026-10-12T02:34:43.4237501Z | Est. Memory / Key | 67.1 bytes | n/a |
+2026-10-12T02:34:43.4237787Z | Process VmRSS | 1977.39 MB | 1939.85 MB |
+2026-10-12T02:34:43.4237978Z 

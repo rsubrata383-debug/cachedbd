@@ -1308,3 +1308,108 @@ Record of major architecture decisions, alternatives considered, and trade-offs.
 3. **Random Generator Audit**:
    - Audited all PRNGs in `src/store/table.rs`, `tests/property.rs`, `benches/store_bench.rs`, and consolidated shared implementation in `tests/common/mod.rs`.
    - All generators strictly enforce non-zero seed panics and sample bits/ranges using high-order bits (`>> 32`) on wide `u64` integers before casting, conforming to Rule 11.1 in `AGENTS.md`.
+
+---
+
+## 2026-10-12: Week 6 Step 3d: Fix Benchmark Drop Latency Data and Consolidate Background Migration
+
+- **Date**: 2026-10-12
+- **Scope**:
+  1. Correction of erroneous "Linux CI Drop Latency" values in `docs/benchmarks.md` and `docs/design/hash-table.md`.
+  2. Integration of fresh Linux CI v2 benchmark logs (`ci-linux-1M-v2.txt` and `ci-linux-10M-v2.txt`).
+  3. Mathematical verification of the migration completion formula.
+  4. Consolidation of background migration into a unified `background_migrate` helper in `src/store/table.rs`.
+
+### 1. Root Cause of Wrong Drop Latency Values
+In the previous documentation update (Step 3c), the values in the "Linux CI Drop Latency" column (1.09 ms, 8.53 ms, 32.79 ms) were erroneously copied from the table buffer *creation* (`RobinHoodTable::new`) latency table instead of the buffer deallocation (`drop(RobinHoodTable)`) latency table.
+
+### 2. Correction and Real Numbers
+The real numbers were extracted directly from the GitHub Linux CI runner logs (`ci-linux-1M-v2.txt` and `ci-linux-10M-v2.txt`):
+
+**Creation and drop time, Linux CI (`ubuntu-24.04`)**:
+
+| Table Capacity | Allocation Size | Creation Latency (1M run) | Drop Latency (1M run) | Creation Latency (10M run) | Drop Latency (10M run) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| 2^20 (1,048,576 slots) | ~42 MB | 1.53 ms | 1.57 ms | 1.94 ms | 1.67 ms |
+| 2^22 (4,194,304 slots) | ~168 MB | 12.34 ms | 6.82 ms | 13.10 ms | 7.32 ms |
+| 2^24 (16,777,216 slots) | ~671 MB | 45.94 ms | 26.86 ms | 48.28 ms | 27.88 ms |
+
+### 3. Slow Inserts Attribution and Migration Completion Formula
+- **Tag Distribution for Inserts > 1 ms**:
+  - 1,000,000 keys: 4 `resize started`, 1 `migration finished, old table dropped`, 0 `unchanged` (5 total).
+  - 10,000,000 keys: 9 `resize started`, 5 `migration finished, old table dropped`, 0 `unchanged` (14 total).
+  - 100% of pauses > 1 ms are accounted for by backing buffer allocation and deallocation; 0 pauses occurred during steady-state migration.
+- **Migration Completion Formula**:
+  $$\text{op\_end} = \text{op\_start} + \frac{C_{\text{old}} + N_{\text{old}}}{16}$$
+  - 1M run: $458,752 + (524,288 + 458,752) / 16 = 520,192$, exactly matching measured Op #520,192 (1.19 ms).
+  - 10M run (resize 1): $3,670,016 + (4,194,304 + 3,670,016) / 16 = 4,161,536$, exactly matching measured Op #4,161,536 (7.00 ms).
+  - 10M run (resize 2): $7,340,032 + (8,388,608 + 7,340,032) / 16 = 8,323,072$, exactly matching measured Op #8,323,072 (13.88 ms).
+
+### 4. Consolidated Background Migration in `src/store/table.rs`
+- Implemented `background_migrate(&mut self)` private helper invoking `step_migration(MIGRATE_BATCH)` and handling errors centrally.
+- Documented invariant: a failed background migration step is not fatal, both tables remain fully valid and consistent, and the next operation retries.
+- Used `background_migrate` across `get_mut`, `remove`, and `insert_with_hash`.
+- In `insert_with_hash`, a failed background migration step when `main_table` is at maximum load limit no longer aborts an overwrite of an existing key in `main_table`. Overwriting does not increase load, avoiding spurious `TableFull` errors.
+- Added comprehensive unit test `test_overwrite_succeeds_when_main_table_at_load_limit_and_old_table_not_empty` asserting successful overwrite, full invariant retention (`check_invariants()`), and zero key loss.
+
+---
+
+## 2026-10-12: Week 7 Step 1: Command Layer Design and Dispatch Architecture
+
+- **Date**: 2026-10-12
+- **Scope**: Implementation of the decoupled command evaluation engine (`src/cmd/`) and the key-value store wrapper (`src/store/store.rs`) executing `ping`, `put`, `fetch`, `drop`, `has`, and `size`.
+
+### 1. Specification Audit Summary
+Prior to implementation, an audit of the frozen specifications was conducted:
+1. `docs/spec/commands.md`:
+   - Commands on the wire are transmitted inside standard `Value::Array` payload frames.
+   - Command names must be strictly lowercase (`put`, `fetch`, etc.). Server uses exact byte matching; uppercase variants (`PUT`, `Ping`) are rejected with `2001` (`ERR_UNKNOWN_COMMAND`).
+   - Defined dispatch flags: `READ`, `WRITE`, `NO_AUTH`, `ADMIN`.
+   - Arity is strictly verified prior to handler dispatch, returning `2002` (`ERR_WRONG_ARG_COUNT`).
+   - Multi-key `drop` returns an `Int` count of keys removed and must validate all keys atomically before dropping any key.
+2. `docs/spec/errors.md`:
+   - Cataloged exact error codes and message strings.
+   - Key command errors: 2001 (unknown command), 2002 (wrong arg count), 2003 (invalid arg), 2004 (key too large), 2005 (value too large), 2006 (empty key), 2007 (too many args), 2008 (syntax error), 3001 (wrong type), 3003 (integer overflow), 3004 (not an integer), 4003 (out of memory / table full), 5001 (auth required), 6001 (readonly replica), 7001 (internal error).
+   - In all these cases, `close` is `false`.
+3. `docs/spec/values.md` & `protocol.md`:
+   - Value types supported in Phase 1: `Nil` (`0x00`), `Int` (`0x01`), `Float` (`0x02`), `Bool` (`0x03`), `Text` (`0x04`), `Bytes` (`0x05`), `Array` (`0x06`), `Map` (`0x07`).
+   - `Value::Error` (`0x08`) encodes code + message and is strictly a protocol reply object; it must never be stored as a keyspace value.
+   - Wire limits: Max key size default 1,024 bytes (1 KB), max value size 32 MiB, max arguments 65,536.
+
+### 2. Architecture Decisions & Implementation
+1. **Store Abstraction (`src/store/store.rs`)**:
+   - `Store` wraps `RobinHoodTable<Value>`, keeping the storage layer completely decoupled from protocol parsing and error codes.
+   - Supports conditional insertion via `PutCondition` (`Always`, `OnlyIfAbsent` / `nx`, `OnlyIfPresent` / `xx`).
+   - `fetch` returns a clone of the stored `Value`.
+2. **Order of Checks Pipeline**:
+   The engine enforces a strict 6-step evaluation pipeline:
+   - Step 1: Parse request (`2008` for non-array/empty/non-string verb, `2007` for `args.len() > max_args`).
+   - Step 2: Unknown command lookup (`2001`).
+   - Step 3: Authentication verification (`5001` if `require_auth` active and command lacks `NO_AUTH`).
+   - Step 4: Arity verification (`2002`).
+   - Step 5: Read-only verification (`6001` if `read_only` active and command carries `WRITE`).
+   - Step 6: Handler execution.
+3. **No-Panic Guarantee**:
+   All bad inputs are mapped to structured `CmdError` and returned as `Value::Error`. No handler panics on untrusted input.
+
+### 3. Open Specification Questions & Observations
+1. **Error Code for Malformed Command Frame (`2008` vs `1006`)**:
+   - When a client sends a payload that is not a non-empty `Value::Array` or where the verb is not `Text` or `Bytes`, we chose to return `2008` (`ERR_SYNTAX_ERROR`) without closing the connection.
+   - *Question for spec*: Should a malformed top-level command frame be treated as a syntax error (`2008`, keep connection open) or a fatal payload decoding error (`1006` `ERR_MALFORMED_PAYLOAD`, close connection)? We chose `2008` for graceful client recovery.
+2. **Ambiguity of Storing `Nil` (`0x00`)**:
+   - The specification states that `put` accepts "any typed item", which includes `Nil`.
+   - Storing `Nil` creates an ambiguity: `has <key>` returns `true`, but `fetch <key>` returns `Nil`, which is identical to the reply for a non-existent key (cache miss).
+   - *Question for spec*: Should storing `Nil` be disallowed, or should a missing key return a dedicated error / distinct representation in strict mode?
+3. **Value Size Definition**:
+   - The specification states that values cannot exceed 32 MB, but does not define how collection sizes are calculated.
+   - *Adopted definition*: The size of a `Value` is computed recursively as the sum of payload bytes in its item tree (`Text` and `Bytes` byte lengths, 8 bytes for `Int` and `Float`, 1 byte for `Bool`, 0 bytes for `Nil`, and the sum of children for `Array` and `Map`).
+4. **Typo in `docs/spec/values.md` Section 5.2**:
+   - In Section 5.2 ("Wrong Type Errors"), the hex example for error code `3001` shows:
+     `08 D9 17 38 6F ...`
+   - In LEB128 uvarint encoding:
+     `3001` (hex `0x0BB9`) encodes as `B9 17` (`0xB9 0x17`), NOT `D9 17`.
+     The byte sequence `D9 17` decodes to decimal `3033`.
+     Furthermore, the message length byte is `0x38` (56 bytes), but the frame payload length header shows `00 00 00 3C`.
+5. **Memory Copy Overhead on `fetch`**:
+   - `fetch` currently returns `self.get(key).cloned().unwrap_or(Value::Nil)`.
+   - Cloning duplicates multi-megabyte payloads in heap memory. In future phases, this can be optimized with reference-counted shared byte buffers (`Arc<[u8]>` or `bytes::Bytes`) or zero-copy buffer slicing.

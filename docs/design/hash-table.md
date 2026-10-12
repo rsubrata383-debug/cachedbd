@@ -90,11 +90,11 @@ The implementation enforces and validates core invariants (`check_invariants()`)
 In an in-memory database targeting a strict $< 1\text{ ms}$ p99 latency SLA and 200k ops/sec throughput, stop-the-world reallocation is unacceptable. Reallocating and copying a hash table with 10M keys can pause execution for 50–200 ms. Incremental resizing spreads key copying work over mutating operations, bounding latency.
 
 However, while key migration is spread out incrementally across mutating operations (16 buckets at a time), allocating and zero-initializing the new backing table is $O(\text{new capacity})$ at the moment a resize is initiated. Empirical measurements for `RobinHoodTable::new` creation latency on Linux CI (`ubuntu-24.04`):
-- **$2^{20}$ slots (~42 MB)**: `1.09 ms` (1M run) / `2.26 ms` (10M run)
-- **$2^{22}$ slots (~168 MB)**: `8.53 ms` (1M run) / `13.13 ms` (10M run)
-- **$2^{24}$ slots (~671 MB)**: `32.79 ms` (1M run) / `59.05 ms` (10M run)
+- **$2^{20}$ slots (~42 MB)**: `1.53 ms` (1M run) / `1.94 ms` (10M run)
+- **$2^{22}$ slots (~168 MB)**: `12.34 ms` (1M run) / `13.10 ms` (10M run)
+- **$2^{24}$ slots (~671 MB)**: `45.94 ms` (1M run) / `48.28 ms` (10M run)
 
-While this allocation cost causes a transient latency spike at power-of-two boundaries ($p99.99$ tail latency), it avoids copying all keys at once, reducing worst-case latency spikes by **23x to 30x** compared to standard library rehashing.
+While this allocation cost causes a transient latency spike at power-of-two boundaries ($p99.99$ tail latency), it avoids copying all keys at once, reducing worst-case latency spikes by **22x** compared to standard library rehashing.
 
 ### 8.2 Dual-Table Structure
 - `main_table: SingleTable<V>`: The primary active table receiving new insertions.
@@ -129,36 +129,43 @@ While this allocation cost causes a transient latency spike at power-of-two boun
 
 ---
 
-## 9. Benchmark Profile and Latency Spikes (Week 6 Step 3c)
+## 9. Benchmark Profile and Latency Spikes (Week 6 Step 3d)
 
-Empirical performance measured on Linux CI runners (`ubuntu-24.04`, x86_64) across 1,000,000 and 10,000,000 keys:
+Empirical performance measured on Linux CI runners (`ubuntu-24.04`, x86_64) across 1,000,000 and 10,000,000 keys (`ci-linux-1M-v2.txt` and `ci-linux-10M-v2.txt`):
 
 ### 9.1 Insert Latency Distribution
 - **At 1,000,000 keys**:
-  - **Median ($p50$)**: `0.120 µs` (120 ns) vs `0.040 µs` in `std::HashMap`
-  - **99th percentile ($p99$)**: `0.611 µs` vs `0.390 µs` in `std::HashMap`
-  - **99.9th percentile ($p99.9$)**: `1.062 µs` vs `0.541 µs` in `std::HashMap`
-  - **99.99th percentile ($p99.99$)**: `7.321 µs` vs `1.333 µs` in `std::HashMap`
-  - **Maximum latency ($max$)**: `4,460.195 µs` (~4.5 ms) vs `134,747.812 µs` (~134.7 ms) in `std::HashMap` (**30x lower maximum pause**)
+  - **Median ($p50$)**: `0.160 µs` (160 ns) vs `0.090 µs` in `std::HashMap`
+  - **99th percentile ($p99$)**: `0.821 µs` vs `0.371 µs` in `std::HashMap`
+  - **99.9th percentile ($p99.9$)**: `1.693 µs` vs `0.601 µs` in `std::HashMap`
+  - **99.99th percentile ($p99.99$)**: `10.961 µs` vs `10.340 µs` in `std::HashMap`
+  - **Maximum latency ($max$)**: `6,315.823 µs` (~6.3 ms) vs `104,871.793 µs` (~104.9 ms) in `std::HashMap` (**16.6x lower maximum pause**)
 - **At 10,000,000 keys**:
-  - **Median ($p50$)**: `0.210 µs` vs `0.210 µs` in `std::HashMap`
-  - **99th percentile ($p99$)**: `0.931 µs` vs `0.661 µs` in `std::HashMap`
-  - **99.9th percentile ($p99.9$)**: `1.854 µs` vs `0.942 µs` in `std::HashMap`
-  - **99.99th percentile ($p99.99$)**: `11.612 µs` vs `11.050 µs` in `std::HashMap`
-  - **Maximum latency ($max$)**: `50,234.631 µs` (~50.2 ms) vs `1,174,178.501 µs` (~1,174.2 ms) in `std::HashMap` (**23x lower maximum pause**)
+  - **Median ($p50$)**: `0.191 µs` vs `0.161 µs` in `std::HashMap`
+  - **99th percentile ($p99$)**: `0.902 µs` vs `0.532 µs` in `std::HashMap`
+  - **99.9th percentile ($p99.9$)**: `1.823 µs` vs `0.801 µs` in `std::HashMap`
+  - **99.99th percentile ($p99.99$)**: `11.081 µs` vs `10.780 µs` in `std::HashMap`
+  - **Maximum latency ($max$)**: `47,328.061 µs` (~47.3 ms) vs `1,055,231.885 µs` (~1,055.2 ms) in `std::HashMap` (**22x lower maximum pause**)
 
 ### 9.2 Measured Root Causes of Latency Spikes
 By measuring `capacity()` and resizing states before and after every operation, the top slowest inserts showed:
 1. **Resize Started (Buffer Allocation)**:
-   - Op #7,340,032 (`50.23 ms`): capacity changed `8388608 -> 16777216` (~671 MB zero-fill allocation).
-   - Op #3,670,016 (`24.70 ms`): capacity changed `4194304 -> 8388608` (~335 MB zero-fill allocation).
-   - In `std::HashMap`, the equivalent op #7,340,032 took `1,174.18 ms` (1.17 s) because it had to synchronously reallocate, rehash, and copy 7.3M keys. In `RobinHoodTable`, incremental migration avoids stop-the-world copying, reducing pause by **23x**.
+   - Op #7,340,032 (`47.33 ms`): capacity changed `8388608 -> 16777216` (~671 MB zero-fill allocation).
+   - Op #3,670,016 (`24.62 ms`): capacity changed `4194304 -> 8388608` (~335 MB zero-fill allocation).
+   - In `std::HashMap`, the equivalent op #7,340,032 took `1,055.23 ms` (1.055 s) because it had to synchronously reallocate, rehash, and copy 7.3M keys. In `RobinHoodTable`, incremental migration avoids stop-the-world copying, reducing pause by **22x**.
 2. **Migration Finished (Old Table Deallocation)**:
-   - Op #8,323,072 (`15.56 ms`): capacity unchanged (`16777216`), tag `migration finished, old table dropped`. When migration completes and `old_table` reaches 0 elements, dropping the old 8M-slot table deallocates ~335 MB of memory.
-   - Op #4,161,536 (`8.58 ms`): dropping the 4M-slot old table (~168 MB) upon migration completion.
-   - Measured drop latency of empty tables on Linux confirms this: $2^{20}$ slots = 1.09 ms, $2^{22}$ slots = 8.53 ms, $2^{24}$ slots = 32.79 ms.
-3. **Steady-State Operations**:
+   - Op #8,323,072 (`13.88 ms`): capacity unchanged (`16777216`), tag `migration finished, old table dropped`. When migration completes and `old_table` reaches 0 elements, dropping the old 8M-slot table deallocates ~335 MB of memory.
+   - Op #4,161,536 (`7.00 ms`): dropping the 4M-slot old table (~168 MB) upon migration completion.
+   - Measured drop latency of empty tables on Linux confirms this: $2^{20}$ slots = 1.57 ms (1M) / 1.67 ms (10M), $2^{22}$ slots = 6.82 ms (1M) / 7.32 ms (10M), $2^{24}$ slots = 26.86 ms (1M) / 27.88 ms (10M).
+3. **Migration Completion Formula Verification**:
+   - Migration completes after $\frac{C_{\text{old}} + N_{\text{old}}}{16}$ mutating operations from the resize start:
+     $$\text{op\_end} = \text{op\_start} + \frac{C_{\text{old}} + N_{\text{old}}}{16}$$
+   - At 1M keys: $458,752 + (524,288 + 458,752) / 16 = 458,752 + 61,440 = \mathbf{520,192}$ (matches Op #520,192 at 1.19 ms).
+   - At 10M keys: $3,670,016 + (4,194,304 + 3,670,016) / 16 = 3,670,016 + 491,520 = \mathbf{4,161,536}$ (matches Op #4,161,536 at 7.00 ms).
+   - At 10M keys: $7,340,032 + (8,388,608 + 7,340,032) / 16 = 7,340,032 + 983,040 = \mathbf{8,323,072}$ (matches Op #8,323,072 at 13.88 ms).
+4. **Inserts Slower Than 1 ms by Tag**:
+   - 1M run: 4 `resize started`, 1 `migration finished, old table dropped`, 0 `unchanged` (5 of 5 slow inserts > 1 ms).
+   - 10M run: 9 `resize started`, 5 `migration finished, old table dropped`, 0 `unchanged` (14 of 14 slow inserts > 1 ms).
    - Zero operations during normal incremental migration without allocation or deallocation exceeded 1 ms.
-   - Average PSL remains small (0.46 at 1M keys, 0.74 at 10M keys), ensuring steady-state operations remain sub-microsecond.
-4. **Get-Miss Latency & Tag Arrays**:
-   - Get misses are slower than `std::HashMap` (129.2 ns vs 22.9 ns at 1M, 150.6 ns vs 101.1 ns at 10M). The likely reason is that `std::HashMap` (Swiss Table) checks a compact 1-byte control tag array via SIMD within a single 64-byte cache line fetch, whereas `RobinHoodTable` inspects 40-byte slots across memory. A separate compact hash/tag array is a candidate optimization.
+5. **Get-Miss Latency & Tag Arrays**:
+   - Get misses are slower than `std::HashMap` (118.9 ns vs 35.2 ns at 1M, 147.1 ns vs 83.6 ns at 10M). The likely reason is that `std::HashMap` (Swiss Table) checks a compact 1-byte control tag array via SIMD within a single 64-byte cache line fetch, whereas `RobinHoodTable` inspects 40-byte slots across memory. A separate compact hash/tag array is a candidate optimization.
