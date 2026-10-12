@@ -1558,3 +1558,27 @@ We formalized the exact coercion and error mapping as follows:
 ### 3. Idle Timeout for Half-Sent Frames
 
 - "Idle timeout for half-sent frames is deferred." Sockets that send partial frame fragments currently remain open indefinitely until explicit EOF or new data arriving completes the frame header.
+
+---
+
+## 2026-10-12: Week 8 Step 1 — Synchronous Client Library Implementation
+
+- **Date**: 2026-10-12
+- **Scope**: Zero-dependency synchronous client library (`cachedb::client::Client`), fault injection testing, and pipelined throughput validation.
+
+### 1. Synchronous Client Design (`cachedb::client`)
+
+- **Transport**: Standard blocking `std::net::TcpStream` with configurable `connect_timeout`, `read_timeout`, and `write_timeout` via `ClientConfig`.
+- **Handshake & Metadata**: Automated `HELLO` protocol negotiation (version 1) storing advertised server limits in `ServerInfo`.
+- **Execution & Pipelining**:
+  - `Client::command`: Dispatches single array commands with wrapping `u32` `request_id` counter, validating `FLAG_RESPONSE`.
+  - `Client::pipeline`: Batches multiple commands in a single socket write (`write_all`), matching and verifying responses in strict FIFO order.
+- **Typed Helpers**: Ergonomic abstractions for `ping`, `put`, `put_nx`, `put_xx`, `fetch`, `drop_keys`, `has`, `size`, `bump`, and `quit`.
+
+### 2. Design Decisions Not Explicit in Spec
+
+1. **Stored Nil Distinction**: Calling `fetch` on a key holding `Value::Nil` returns `Ok(None)` identical to a cache miss. Clients needing strict presence verification call `has(key)`.
+2. **Empty Drop Optimization**: `drop_keys` on an empty slice returns `Ok(0)` immediately without a network round-trip.
+3. **Fatal Error State Machine**: Fatal transport errors (`Io`, `Protocol`, `ConnectionClosed`, `ReplyTooLarge`) transition the client into `is_broken = true`. Subsequent calls return `ConnectionClosed` immediately. Non-fatal application errors (`ClientError::Server`) keep the connection healthy.
+4. **Cross-Platform Disconnect Mapping**: Windows socket aborts (`WSAECONNABORTED`, 10053) and peer resets (`ConnectionReset`, `BrokenPipe`, `UnexpectedEof`) are normalized to `ClientError::ConnectionClosed`.
+5. **Deferred Features**: Automatic reconnect, connection pooling, TLS encryption, and async runtimes are intentionally omitted in v0.1.

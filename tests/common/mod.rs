@@ -7,6 +7,7 @@ pub struct XorShift64 {
     state: u64,
 }
 
+#[allow(dead_code)]
 impl XorShift64 {
     /// Creates a new generator with the given non-zero seed.
     ///
