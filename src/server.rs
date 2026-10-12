@@ -7,7 +7,7 @@ use crate::net::event_loop::{EventLoop, Handler, TimerId, Token};
 use crate::net::sys::EpollFlags;
 use crate::proto::decode_frame;
 use crate::proto::encode::encode_frame;
-use crate::proto::header::{FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
+use crate::proto::header::{DecodedHeader, FLAG_ERROR, FLAG_RESPONSE, HEADER_LEN, Header, Opcode};
 use crate::proto::{Decoded, Frame, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
@@ -389,7 +389,14 @@ impl Server {
     }
 
     fn has_complete_frame(data: &[u8]) -> bool {
-        matches!(decode_frame(data), Ok(Decoded::Complete(_)))
+        match Header::decode(data) {
+            Ok(DecodedHeader::NeedMore) => false,
+            Ok(DecodedHeader::Complete(header)) => {
+                let total_len = HEADER_LEN.saturating_add(header.payload_len as usize);
+                data.len() >= total_len
+            }
+            Err(_) => true,
+        }
     }
 
     /// Reads incoming bytes from a client socket and processes frames via pipelining.
@@ -832,5 +839,52 @@ mod tests {
         assert!(conn.is_backpressured());
         // Under backpressure: READABLE interest dropped, WRITABLE only
         assert_eq!(conn.desired_flags(), EpollFlags::WRITABLE);
+    }
+
+    #[test]
+    fn test_has_complete_frame_partial_header() {
+        // Less than 14 bytes: header cannot be decoded yet
+        let partial_header = [0xCA, 0xDB, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00];
+        assert!(!Server::has_complete_frame(&partial_header));
+    }
+
+    #[test]
+    fn test_has_complete_frame_partial_payload() {
+        // 14-byte valid header with payload_len = 10 (total frame = 24 bytes), but only 20 bytes provided
+        let header = Header::new(0, 1, Opcode::Command, 10);
+        let mut data = header.to_bytes().to_vec();
+        data.extend_from_slice(&[0u8; 6]); // 14 + 6 = 20 < 24
+        assert!(!Server::has_complete_frame(&data));
+    }
+
+    #[test]
+    fn test_has_complete_frame_exact_frame() {
+        // 14-byte header with payload_len = 10, exact 24 bytes provided
+        let header = Header::new(0, 1, Opcode::Command, 10);
+        let mut data = header.to_bytes().to_vec();
+        data.extend_from_slice(&[0u8; 10]); // 14 + 10 = 24
+        assert!(Server::has_complete_frame(&data));
+    }
+
+    #[test]
+    fn test_has_complete_frame_two_frames() {
+        // Two consecutive complete frames (24 bytes each, total 48 bytes)
+        let header = Header::new(0, 1, Opcode::Command, 10);
+        let mut data = header.to_bytes().to_vec();
+        data.extend_from_slice(&[0u8; 10]);
+        let header2 = Header::new(0, 2, Opcode::Command, 10);
+        data.extend_from_slice(&header2.to_bytes());
+        data.extend_from_slice(&[0u8; 10]);
+        assert_eq!(data.len(), 48);
+        assert!(Server::has_complete_frame(&data));
+    }
+
+    #[test]
+    fn test_has_complete_frame_bad_magic() {
+        // 14 bytes with invalid magic (not 0xCA 0xDB): must return true so error is reported
+        let mut bad_magic = [0u8; 14];
+        bad_magic[0] = 0x00;
+        bad_magic[1] = 0x00;
+        assert!(Server::has_complete_frame(&bad_magic));
     }
 }

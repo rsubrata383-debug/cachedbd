@@ -9,28 +9,19 @@ use cachedb::proto::encode::encode_frame;
 use cachedb::proto::header::{Header, Opcode};
 use cachedb::proto::{Frame, Value};
 use cachedb::server::ServerConfig;
-use common::TestServer;
+use common::{TestServer, expect_ok_reply, raw_handshake, read_one_frame};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-fn setup_handshake_and_put_bigkey(stream: &mut TcpStream, client_name: &str, big_value: &[u8]) {
-    let hello_cmd = Frame::new(
-        Header::new(0, 1, Opcode::Hello, 0),
-        Value::Array(vec![
-            Value::Text("hello".to_string()),
-            Value::Int(1),
-            Value::Text(client_name.to_string()),
-        ]),
-    );
-    let mut hello_bytes = Vec::new();
-    encode_frame(&hello_cmd, &mut hello_bytes).expect("encode hello");
-    stream.write_all(&hello_bytes).expect("send hello");
-
-    let mut hello_reply_buf = vec![0u8; 1024];
-    let n = stream.read(&mut hello_reply_buf).expect("read hello reply");
-    assert!(n > 0, "must receive hello reply");
+fn setup_handshake_and_put_bigkey(
+    stream: &mut TcpStream,
+    acc: &mut Vec<u8>,
+    client_name: &str,
+    big_value: &[u8],
+) {
+    let _hello_resp = raw_handshake(stream, acc, client_name);
 
     let put_cmd = Frame::new(
         Header::new(0, 2, Opcode::Command, 0),
@@ -44,38 +35,22 @@ fn setup_handshake_and_put_bigkey(stream: &mut TcpStream, client_name: &str, big
     encode_frame(&put_cmd, &mut put_bytes).expect("encode put");
     stream.write_all(&put_bytes).expect("send put");
 
-    let mut put_reply_buf = vec![0u8; 1024];
-    let n_put = stream.read(&mut put_reply_buf).expect("read put reply");
-    assert!(n_put > 0, "must receive put reply");
+    let reply = read_one_frame(stream, acc);
+    expect_ok_reply(&reply, 2);
+    assert_eq!(reply.payload, Value::Bool(true));
 }
 
 fn drain_and_verify_replies(
     stream: &mut TcpStream,
+    acc: &mut Vec<u8>,
     start_id: u32,
     end_id: u32,
     expected_payload: &Value,
 ) {
-    let mut drain_buf = vec![0u8; 64 * 1024];
-    let mut read_acc = Vec::new();
-    let mut next_expected_id = start_id;
-
-    while next_expected_id <= end_id {
-        let n = stream.read(&mut drain_buf).expect("read reply chunk");
-        assert!(n > 0, "unexpected EOF while draining");
-        read_acc.extend_from_slice(&drain_buf[..n]);
-
-        while !read_acc.is_empty() {
-            match cachedb::proto::decode_frame(&read_acc) {
-                Ok(cachedb::proto::Decoded::Complete((frame, used))) => {
-                    assert_eq!(frame.header.request_id, next_expected_id);
-                    assert_eq!(&frame.payload, expected_payload);
-                    next_expected_id += 1;
-                    read_acc.drain(..used);
-                }
-                Ok(cachedb::proto::Decoded::NeedMore) => break,
-                Err(e) => panic!("decode error while draining: {e:?}"),
-            }
-        }
+    for expected_id in start_id..=end_id {
+        let frame = read_one_frame(stream, acc);
+        expect_ok_reply(&frame, expected_id);
+        assert_eq!(&frame.payload, expected_payload);
     }
 }
 
@@ -97,10 +72,11 @@ fn test_slow_reader_backpressure_and_resume() {
         .set_write_timeout(Some(Duration::from_secs(5)))
         .expect("set write timeout");
 
+    let mut acc = Vec::new();
     let big_value = (0..256 * 1024)
         .map(|i| (i % 251) as u8)
         .collect::<Vec<u8>>();
-    setup_handshake_and_put_bigkey(&mut stream, "test-client", &big_value);
+    setup_handshake_and_put_bigkey(&mut stream, &mut acc, "test-client", &big_value);
 
     // Pipeline 300 big fetches on writer thread
     let mut write_stream = stream.try_clone().expect("clone stream for writing");
@@ -127,7 +103,14 @@ fn test_slow_reader_backpressure_and_resume() {
     while server.stats().backpressure_pauses.load(Ordering::Relaxed) == 0 {
         assert!(
             start_wait.elapsed() <= Duration::from_secs(5),
-            "server failed to trigger backpressure within 5s"
+            "server failed to trigger backpressure within 5s; stats: pauses={}, max_queue={}, closed={}, frames={}",
+            server.stats().backpressure_pauses.load(Ordering::Relaxed),
+            server
+                .stats()
+                .max_write_queue_bytes_seen
+                .load(Ordering::Relaxed),
+            server.stats().connections_closed.load(Ordering::Relaxed),
+            server.stats().frames_processed.load(Ordering::Relaxed),
         );
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -144,7 +127,7 @@ fn test_slow_reader_backpressure_and_resume() {
     );
 
     // Drain all 300 replies and verify in order
-    drain_and_verify_replies(&mut stream, 3, 302, &Value::Bytes(big_value));
+    drain_and_verify_replies(&mut stream, &mut acc, 3, 302, &Value::Bytes(big_value));
     writer_handle.join().expect("join writer");
 }
 
@@ -166,10 +149,11 @@ fn test_slow_reader_does_not_starve_other_clients() {
         .set_write_timeout(Some(Duration::from_secs(5)))
         .expect("set timeout");
 
+    let mut acc1 = Vec::new();
     let big_value = (0..256 * 1024)
         .map(|i| (i % 251) as u8)
         .collect::<Vec<u8>>();
-    setup_handshake_and_put_bigkey(&mut stream1, "slow-client", &big_value);
+    setup_handshake_and_put_bigkey(&mut stream1, &mut acc1, "slow-client", &big_value);
 
     // Client 1 sends 300 big fetches without reading
     let mut write_stream1 = stream1.try_clone().expect("clone stream");
@@ -196,7 +180,14 @@ fn test_slow_reader_does_not_starve_other_clients() {
     while server.stats().backpressure_pauses.load(Ordering::Relaxed) == 0 {
         assert!(
             start_wait.elapsed() <= Duration::from_secs(5),
-            "client 1 failed to trigger backpressure within 5s"
+            "client 1 failed to trigger backpressure within 5s; stats: pauses={}, max_queue={}, closed={}, frames={}",
+            server.stats().backpressure_pauses.load(Ordering::Relaxed),
+            server
+                .stats()
+                .max_write_queue_bytes_seen
+                .load(Ordering::Relaxed),
+            server.stats().connections_closed.load(Ordering::Relaxed),
+            server.stats().frames_processed.load(Ordering::Relaxed),
         );
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -215,7 +206,7 @@ fn test_slow_reader_does_not_starve_other_clients() {
     }
 
     // Client 1 reads all 300 replies correctly
-    drain_and_verify_replies(&mut stream1, 3, 302, &Value::Bytes(big_value));
+    drain_and_verify_replies(&mut stream1, &mut acc1, 3, 302, &Value::Bytes(big_value));
     sender1.join().expect("join sender1");
 }
 
@@ -388,10 +379,11 @@ fn test_disconnect_while_paused_cleans_up() {
         .set_write_timeout(Some(Duration::from_secs(5)))
         .expect("set timeout");
 
+    let mut acc = Vec::new();
     let big_value = (0..256 * 1024)
         .map(|i| (i % 251) as u8)
         .collect::<Vec<u8>>();
-    setup_handshake_and_put_bigkey(&mut stream, "pause-disconnect-client", &big_value);
+    setup_handshake_and_put_bigkey(&mut stream, &mut acc, "pause-disconnect-client", &big_value);
 
     // Client sends big fetches on background writer thread
     let mut write_stream = stream.try_clone().expect("clone stream");
@@ -418,7 +410,14 @@ fn test_disconnect_while_paused_cleans_up() {
     while server.stats().backpressure_pauses.load(Ordering::Relaxed) == 0 {
         assert!(
             start_wait.elapsed() <= Duration::from_secs(5),
-            "must trigger backpressure before disconnect"
+            "must trigger backpressure before disconnect; stats: pauses={}, max_queue={}, closed={}, frames={}",
+            server.stats().backpressure_pauses.load(Ordering::Relaxed),
+            server
+                .stats()
+                .max_write_queue_bytes_seen
+                .load(Ordering::Relaxed),
+            server.stats().connections_closed.load(Ordering::Relaxed),
+            server.stats().frames_processed.load(Ordering::Relaxed),
         );
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -435,7 +434,14 @@ fn test_disconnect_while_paused_cleans_up() {
     while server.stats().connections_closed.load(Ordering::Relaxed) <= closed_before {
         assert!(
             start_closed.elapsed() <= Duration::from_secs(2),
-            "connections_closed counter failed to increment within 2s"
+            "connections_closed counter failed to increment within 2s; stats: pauses={}, max_queue={}, closed={}, frames={}",
+            server.stats().backpressure_pauses.load(Ordering::Relaxed),
+            server
+                .stats()
+                .max_write_queue_bytes_seen
+                .load(Ordering::Relaxed),
+            server.stats().connections_closed.load(Ordering::Relaxed),
+            server.stats().frames_processed.load(Ordering::Relaxed),
         );
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -480,22 +486,8 @@ fn test_half_close_pipelined_pings() {
         .set_write_timeout(Some(Duration::from_secs(5)))
         .expect("set timeout");
 
-    // Handshake
-    let hello_cmd = Frame::new(
-        Header::new(0, 1, Opcode::Hello, 0),
-        Value::Array(vec![
-            Value::Text("hello".to_string()),
-            Value::Int(1),
-            Value::Text("half-close-client".to_string()),
-        ]),
-    );
-    let mut hello_bytes = Vec::new();
-    encode_frame(&hello_cmd, &mut hello_bytes).expect("encode hello");
-    stream.write_all(&hello_bytes).expect("send hello");
-
-    let mut hello_reply_buf = vec![0u8; 1024];
-    let n = stream.read(&mut hello_reply_buf).expect("read hello reply");
-    assert!(n > 0);
+    let mut acc = Vec::new();
+    let _hello_resp = raw_handshake(&mut stream, &mut acc, "half-close-client");
 
     // Write 1,000 ping requests in one write
     let mut all_pings = Vec::new();
@@ -513,34 +505,20 @@ fn test_half_close_pipelined_pings() {
         .shutdown(std::net::Shutdown::Write)
         .expect("shutdown write");
 
-    // Read all 1,000 replies until EOF
-    let mut drain_buf = vec![0u8; 16 * 1024];
-    let mut read_acc = Vec::new();
-    let mut expected_id = 2u32;
+    // Read all 1,000 replies
     let expected_pong = Value::Text("pong".to_string());
-
-    loop {
-        let n = stream.read(&mut drain_buf).expect("read reply chunk");
-        if n == 0 {
-            break;
-        }
-        read_acc.extend_from_slice(&drain_buf[..n]);
-
-        while !read_acc.is_empty() {
-            match cachedb::proto::decode_frame(&read_acc) {
-                Ok(cachedb::proto::Decoded::Complete((frame, used))) => {
-                    assert_eq!(frame.header.request_id, expected_id);
-                    assert_eq!(frame.payload, expected_pong);
-                    expected_id += 1;
-                    read_acc.drain(..used);
-                }
-                Ok(cachedb::proto::Decoded::NeedMore) => break,
-                Err(e) => panic!("decode error while draining half-close: {e:?}"),
-            }
-        }
+    for req_id in 2..=1001 {
+        let frame = read_one_frame(&mut stream, &mut acc);
+        expect_ok_reply(&frame, req_id);
+        assert_eq!(frame.payload, expected_pong);
     }
 
-    assert_eq!(expected_id, 1002);
+    // After all 1,000 replies, server should close connection (read returns EOF)
+    let mut eof_buf = [0u8; 16];
+    let n = stream
+        .read(&mut eof_buf)
+        .expect("read after half-close EOF");
+    assert_eq!(n, 0, "expected EOF from server after reading all replies");
 }
 
 #[test]
@@ -562,10 +540,11 @@ fn test_half_close_with_backpressure_and_big_fetches() {
         .set_write_timeout(Some(Duration::from_secs(5)))
         .expect("set timeout");
 
+    let mut acc = Vec::new();
     let big_value = (0..256 * 1024)
         .map(|i| (i % 251) as u8)
         .collect::<Vec<u8>>();
-    setup_handshake_and_put_bigkey(&mut stream, "half-close-big-client", &big_value);
+    setup_handshake_and_put_bigkey(&mut stream, &mut acc, "half-close-big-client", &big_value);
 
     // Write 50 big fetches (12.5 MB of replies with 64 KB watermark guarantees backpressure)
     let total_fetches = 50u32;
@@ -588,7 +567,23 @@ fn test_half_close_with_backpressure_and_big_fetches() {
         .expect("shutdown write");
 
     // Drain all replies until EOF
-    drain_and_verify_replies(&mut stream, 3, 2 + total_fetches, &Value::Bytes(big_value));
+    drain_and_verify_replies(
+        &mut stream,
+        &mut acc,
+        3,
+        2 + total_fetches,
+        &Value::Bytes(big_value),
+    );
+
+    // Verify EOF after draining all replies
+    let mut eof_buf = [0u8; 16];
+    let n = stream
+        .read(&mut eof_buf)
+        .expect("read after big half-close EOF");
+    assert_eq!(
+        n, 0,
+        "expected EOF from server after reading all fetch replies"
+    );
 
     assert!(
         server.stats().backpressure_pauses.load(Ordering::Relaxed) >= 1,
@@ -653,44 +648,94 @@ fn test_half_close_single_request_receives_reply() {
         .set_write_timeout(Some(Duration::from_secs(2)))
         .expect("set timeout");
 
-    // Send hello then immediately shutdown write
-    let hello_cmd = Frame::new(
-        Header::new(0, 1, Opcode::Hello, 0),
-        Value::Array(vec![
-            Value::Text("hello".to_string()),
-            Value::Int(1),
-            Value::Text("single-shot-client".to_string()),
-        ]),
+    // Send ping command then immediately shutdown write
+    let ping_cmd = Frame::new(
+        Header::new(0, 1, Opcode::Command, 0),
+        Value::Array(vec![Value::Text("ping".to_string())]),
     );
-    let mut hello_bytes = Vec::new();
-    encode_frame(&hello_cmd, &mut hello_bytes).expect("encode hello");
-    stream.write_all(&hello_bytes).expect("send hello");
+    let mut ping_bytes = Vec::new();
+    encode_frame(&ping_cmd, &mut ping_bytes).expect("encode ping");
+    stream.write_all(&ping_bytes).expect("send ping");
 
     stream
         .shutdown(std::net::Shutdown::Write)
         .expect("shutdown write");
 
     // Must receive reply then EOF
-    let mut buf = vec![0u8; 4096];
-    let mut read_acc = Vec::new();
-    let mut reply_received = false;
+    let mut acc = Vec::new();
+    let reply = read_one_frame(&mut stream, &mut acc);
+    expect_ok_reply(&reply, 1);
+    assert_eq!(reply.payload, Value::Text("pong".to_string()));
 
-    loop {
-        let n = stream.read(&mut buf).expect("read chunk");
-        if n == 0 {
-            break;
+    let mut eof_buf = [0u8; 16];
+    let n = stream.read(&mut eof_buf).expect("read after ping reply");
+    assert_eq!(n, 0, "must receive EOF after half-close reply");
+}
+
+#[test]
+fn test_malformed_hello_payload_rejected_with_1006_and_closed() {
+    use cachedb::proto::header::{FLAG_ERROR, FLAG_RESPONSE};
+
+    let config = ServerConfig {
+        idle_timeout: None,
+        ..ServerConfig::default()
+    };
+    let server = TestServer::start_with_config(config);
+
+    let mut stream = server.connect();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set read timeout");
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .expect("set write timeout");
+
+    // Send malformed hello frame (buggy test payload: ["hello", 1, "x"])
+    let bad_hello = Frame::new(
+        Header::new(0, 1, Opcode::Hello, 0),
+        Value::Array(vec![
+            Value::Text("hello".to_string()),
+            Value::Int(1),
+            Value::Text("x".to_string()),
+        ]),
+    );
+    let mut bad_bytes = Vec::new();
+    encode_frame(&bad_hello, &mut bad_bytes).expect("encode malformed hello");
+    stream.write_all(&bad_bytes).expect("send malformed hello");
+
+    // Read one reply frame
+    let mut acc = Vec::new();
+    let reply = read_one_frame(&mut stream, &mut acc);
+
+    // Assert it is an ERROR reply with code 1006 (ERR_MALFORMED_PAYLOAD)
+    assert!(
+        reply.header.flags & FLAG_RESPONSE != 0,
+        "reply must have FLAG_RESPONSE set"
+    );
+    assert!(
+        reply.header.flags & FLAG_ERROR != 0,
+        "reply must have FLAG_ERROR set"
+    );
+    assert_eq!(reply.header.request_id, 1);
+    match reply.payload {
+        Value::Error { code, .. } => {
+            assert_eq!(code, 1006, "expected ERR_MALFORMED_PAYLOAD (1006)");
         }
-        read_acc.extend_from_slice(&buf[..n]);
-        if !reply_received {
-            if let Ok(cachedb::proto::Decoded::Complete((frame, used))) =
-                cachedb::proto::decode_frame(&read_acc)
-            {
-                assert_eq!(frame.header.request_id, 1);
-                reply_received = true;
-                read_acc.drain(..used);
-            }
-        }
+        other => panic!("expected Value::Error, got {other:?}"),
     }
 
-    assert!(reply_received, "must have received hello reply before EOF");
+    // Assert server closes the connection (next read is EOF or reset)
+    let mut buf = [0u8; 16];
+    let res = stream.read(&mut buf);
+    match res {
+        Ok(0) => {}
+        Err(ref e)
+            if e.kind() == std::io::ErrorKind::ConnectionReset
+                || e.kind() == std::io::ErrorKind::UnexpectedEof => {}
+        other => panic!("expected EOF or ConnectionReset after malformed hello, got {other:?}"),
+    }
+
+    // Subsequent client can connect and ping cleanly
+    let mut client = Client::connect(server.addr()).expect("subsequent client connect");
+    assert_eq!(client.ping().expect("subsequent client ping"), "pong");
 }

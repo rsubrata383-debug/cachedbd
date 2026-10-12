@@ -169,6 +169,125 @@ impl Drop for TestServer {
     }
 }
 
+/// Reads exactly one complete protocol frame from `stream`, accumulating unconsumed bytes in `acc`.
+///
+/// # Panics
+///
+/// Panics with an informative diagnostic message on EOF, socket timeout, or decode error.
+#[allow(dead_code)]
+pub fn read_one_frame(
+    stream: &mut std::net::TcpStream,
+    acc: &mut Vec<u8>,
+) -> cachedb::proto::Frame {
+    use std::io::Read;
+    let mut buf = [0u8; 8192];
+    loop {
+        if !acc.is_empty() {
+            match cachedb::proto::decode_frame(acc) {
+                Ok(cachedb::proto::Decoded::Complete((frame, used))) => {
+                    acc.drain(..used);
+                    return frame;
+                }
+                Ok(cachedb::proto::Decoded::NeedMore) => {}
+                Err(e) => panic!(
+                    "read_one_frame decode error: {e:?}, buffered bytes: {}",
+                    acc.len()
+                ),
+            }
+        }
+        let n = match stream.read(&mut buf) {
+            Ok(0) => panic!(
+                "read_one_frame unexpected EOF, buffered bytes: {}",
+                acc.len()
+            ),
+            Ok(n) => n,
+            Err(e) => panic!(
+                "read_one_frame read error: {e:?}, buffered bytes: {}",
+                acc.len()
+            ),
+        };
+        acc.extend_from_slice(&buf[..n]);
+    }
+}
+
+/// Executes a raw HELLO handshake on `stream` with client name `client_name`.
+///
+/// Sends opcode 1 (`Opcode::Hello`) with properly structured `HelloRequest` payload,
+/// reads the reply frame into `acc`, and verifies handshake response invariants.
+///
+/// # Panics
+///
+/// Panics if the handshake reply frame is missing RESPONSE flag, has ERROR flag,
+/// opcode is not Hello, request_id is not 1, or payload cannot be parsed as `HelloResponse`.
+#[allow(dead_code)]
+pub fn raw_handshake(
+    stream: &mut std::net::TcpStream,
+    acc: &mut Vec<u8>,
+    client_name: &str,
+) -> cachedb::proto::hello::HelloResponse {
+    use cachedb::proto::Frame;
+    use cachedb::proto::encode::encode_frame;
+    use cachedb::proto::header::{FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
+    use cachedb::proto::hello::{HelloRequest, HelloResponse};
+    use std::io::Write;
+
+    let req = HelloRequest::new(1, client_name.to_string(), None);
+    let hello_cmd = Frame::new(Header::new(0, 1, Opcode::Hello, 0), req.to_value());
+    let mut bytes = Vec::new();
+    encode_frame(&hello_cmd, &mut bytes).expect("encode hello");
+    stream.write_all(&bytes).expect("send hello");
+
+    let reply = read_one_frame(stream, acc);
+    assert!(
+        reply.header.flags & FLAG_RESPONSE != 0,
+        "raw_handshake: reply header missing FLAG_RESPONSE: {reply:?}"
+    );
+    assert!(
+        reply.header.flags & FLAG_ERROR == 0,
+        "raw_handshake: reply header contains FLAG_ERROR: {reply:?}"
+    );
+    assert_eq!(
+        reply.header.opcode,
+        Opcode::Hello,
+        "raw_handshake: expected Opcode::Hello, got: {reply:?}"
+    );
+    assert_eq!(
+        reply.header.request_id, 1,
+        "raw_handshake: expected request_id 1, got: {reply:?}"
+    );
+
+    HelloResponse::from_value(&reply.payload)
+        .unwrap_or_else(|e| panic!("raw_handshake: invalid HelloResponse payload {e:?}: {reply:?}"))
+}
+
+/// Asserts that `frame` is a successful response matching `expected_request_id`.
+///
+/// # Panics
+///
+/// Panics if RESPONSE flag is unset, ERROR flag is set, request_id differs, or payload is `Value::Error`.
+#[allow(dead_code)]
+pub fn expect_ok_reply(frame: &cachedb::proto::Frame, expected_request_id: u32) {
+    use cachedb::proto::Value;
+    use cachedb::proto::header::{FLAG_ERROR, FLAG_RESPONSE};
+
+    assert!(
+        frame.header.flags & FLAG_RESPONSE != 0,
+        "expect_ok_reply: missing FLAG_RESPONSE flag in frame: {frame:?}"
+    );
+    assert!(
+        frame.header.flags & FLAG_ERROR == 0,
+        "expect_ok_reply: unexpected FLAG_ERROR flag in frame: {frame:?}"
+    );
+    assert_eq!(
+        frame.header.request_id, expected_request_id,
+        "expect_ok_reply: request_id mismatch (expected {expected_request_id}) in frame: {frame:?}"
+    );
+    assert!(
+        !matches!(frame.payload, Value::Error { .. }),
+        "expect_ok_reply: unexpected Value::Error payload in frame: {frame:?}"
+    );
+}
+
 /// Portable, blocking test server using only `std` threads and sockets.
 #[allow(dead_code)]
 pub struct TestBlockingServer {

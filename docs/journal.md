@@ -1650,3 +1650,13 @@ We formalized the exact coercion and error mapping as follows:
 9. **Thread Safety & Clean Teardown**: Updated all test writer threads to set write timeouts and explicitly join at test completion.
 10. **Half-Close E2E Test Suite**: Added 4 Linux tests covering pipelined pings with half-close, big fetches with backpressure and half-close, partial frame drops, and single-shot request half-closes.
 
+---
+
+## 2026-10-12: Week 8 Step 3c — Test Handshake Payload Fix & Strict Reply Verification
+
+Week 8 Step 3c: tests used a wrong HELLO payload; server was right; fixed helpers; all raw tests now verify the reply flags.
+
+1. **Root Cause Confirmation**: E2E test failures on Linux were caused by tests crafting malformed HELLO frames with payload `["hello", 1, client_name]` instead of `[1, client_name]`. The server correctly responded with `ERR_MALFORMED_PAYLOAD` (code 1006) and closed the connection.
+2. **Robust Test Helpers**: Implemented `raw_handshake`, `read_one_frame`, and `expect_ok_reply` in `tests/common/mod.rs` to validate all reply headers, flags (`FLAG_RESPONSE`, not `FLAG_ERROR`), and opcodes across test suites.
+3. **Pipelining & Accumulation**: Preserved unconsumed bytes in a shared accumulator across both handshake and command reply drains, eliminating race conditions and lost frames.
+4. **Regression Testing**: Added `test_malformed_hello_payload_rejected_with_1006_and_closed` ensuring invalid HELLO payloads elicit code 1006 followed by clean server-initiated closure, leaving the server responsive for subsequent clients.
