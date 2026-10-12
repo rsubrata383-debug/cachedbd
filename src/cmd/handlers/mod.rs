@@ -14,7 +14,7 @@ pub use bump::{handle_bump, parse_strict_i64};
 pub use drop_cmd::handle_drop;
 pub use fetch::handle_fetch;
 pub use has::handle_has;
-pub use hello::handle_hello;
+pub use hello::{build_hello_response, handle_hello};
 pub use ping::handle_ping;
 pub use put::handle_put;
 pub use quit::handle_quit;

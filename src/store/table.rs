@@ -269,7 +269,7 @@ impl<V> SingleTable<V> {
         Err(curr_slot)
     }
 
-    fn insert_with_hash(
+    pub(crate) fn insert_with_hash(
         &mut self,
         hash: u64,
         key: Box<[u8]>,
@@ -469,7 +469,7 @@ pub struct RobinHoodTable<V> {
     pub(crate) main_table: SingleTable<V>,
     pub(crate) old_table: Option<SingleTable<V>>,
     pub(crate) migrate_cursor: usize,
-    seed: u64,
+    pub(crate) seed: u64,
     max_capacity: usize,
 }
 

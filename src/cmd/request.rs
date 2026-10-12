@@ -2,14 +2,12 @@
 
 use crate::cmd::dispatch::{Engine, Session};
 use crate::cmd::error::{
-    ERR_MALFORMED_PAYLOAD, ERR_UNKNOWN_COMMAND, ERR_UNSUPPORTED_PROTOCOL_VERSION,
+    ERR_AUTH_REQUIRED, ERR_MALFORMED_PAYLOAD, ERR_UNKNOWN_COMMAND, ERR_UNSUPPORTED_PROTOCOL_VERSION,
 };
+use crate::cmd::handlers::build_hello_response;
 use crate::proto::header::{FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
-use crate::proto::hello::{HelloRequest, HelloResponse, negotiate_version};
+use crate::proto::hello::{HelloRequest, negotiate_version};
 use crate::proto::{Frame, Value};
-
-/// Default maximum allowable payload size: 64 MB (67,108,864 bytes).
-const DEFAULT_MAX_FRAME_SIZE: i64 = 64 * 1024 * 1024;
 
 /// Result of processing an incoming wire protocol frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +35,9 @@ pub struct FrameOutcome {
 ///   - If payload is malformed, returns an error frame with code `1006` and sets `close = true`.
 ///   - Validates the protocol version via [`negotiate_version`]. If not version `1`,
 ///     returns error code `1001` and sets `close = true`.
-///   - Authenticates the session and returns a server configuration [`HelloResponse`] map
+///   - If `require_auth` is enabled, returns `5001` ([`ERR_AUTH_REQUIRED`]) with flags `0x03`
+///     and leaves connection open.
+///   - Authenticates the session and returns a server configuration [`crate::proto::hello::HelloResponse`] map
 ///     with opcode `0x0001` and flags `0x01`.
 /// - **Unsupported Opcode (e.g. `Opcode::Push` from client)**:
 ///   - Returns error `2001` ([`ERR_UNKNOWN_COMMAND`]) with flags `0x03` and sets `close = true`.
@@ -105,22 +105,25 @@ fn handle_hello_frame(engine: &Engine, session: &mut Session, frame: &Frame) -> 
         };
     }
 
+    if engine.config().require_auth {
+        // Auth backend comes in a later phase:
+        // Do not authenticate the session and return ERR_AUTH_REQUIRED (5001).
+        let reply = ERR_AUTH_REQUIRED.to_value();
+        let header = Header::new(
+            FLAG_RESPONSE | FLAG_ERROR,
+            frame.header.request_id,
+            Opcode::Hello,
+            0,
+        );
+        return FrameOutcome {
+            reply_frame: Frame::new(header, reply),
+            close: false,
+        };
+    }
+
     session.authenticated = true;
 
-    let client_id = i64::try_from(session.client_id).unwrap_or(0);
-    let max_key_size = i64::try_from(engine.config().max_key_size).unwrap_or(1024);
-    let max_value_size = i64::try_from(engine.config().max_value_size).unwrap_or(32 * 1024 * 1024);
-
-    let resp = HelloResponse {
-        server_name: "cachedbd".to_string(),
-        server_version: "0.1.0".to_string(),
-        protocol_version: 1,
-        client_id,
-        max_frame_size: Some(DEFAULT_MAX_FRAME_SIZE),
-        max_key_size: Some(max_key_size),
-        max_value_size: Some(max_value_size),
-    };
-
+    let resp = build_hello_response(engine.config(), session);
     let header = Header::new(FLAG_RESPONSE, frame.header.request_id, Opcode::Hello, 0);
     FrameOutcome {
         reply_frame: Frame::new(header, resp.to_value()),

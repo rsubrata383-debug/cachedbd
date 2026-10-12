@@ -1490,3 +1490,41 @@ We formalized the exact coercion and error mapping as follows:
 5. **Pipelining & FIFO Guarantee**:
    - Multiple frames received in a single TCP read buffer are decoded sequentially.
    - Responses are produced and enqueued into `WriteQueue` in identical arrival order without reordering.
+
+---
+
+## 2026-10-12: Week 7, Step 4 - Review Hardening, Auth Rules, and TCP Verification
+
+- **Date**: 2026-10-12
+- **Scope**: Hardening server accept loop, consolidating hello responses and authentication semantics, error suppression during migration ticks, serialization failure fallbacks, and comprehensive end-to-end TCP integration testing.
+
+### 1. Fixes from Review
+
+1. **Non-blocking Server Listener**:
+   - `Server::with_engine` now explicitly invokes `listener.set_nonblocking(true)?` and returns `io::Result<Self>`. This ensures the accept loop in `handle_accept` cannot block indefinitely when called upon epoll readiness notifications. `src/main.rs` exits with code 1 if initialization fails.
+2. **Explicit Authentication Requirement & Postponed Backend**:
+   - Both the `hello` command handler and the HELLO frame path now strictly enforce:
+     - When `config.require_auth == false`: `session.authenticated = true`.
+     - When `config.require_auth == true`: authentication backend comes in a later phase. The server keeps `session.authenticated = false` and returns `5001` (`ERR_AUTH_REQUIRED`) whether a token is missing or provided. Unauthenticated clients can continue executing `NO_AUTH` commands (`ping`, `hello`, `quit`).
+3. **Unified Hello Response Builder**:
+   - Created `build_hello_response(config: &CmdConfig, session: &Session) -> HelloResponse` used by both `handle_hello` and `handle_hello_frame`.
+   - Software version is extracted directly from `env!("CARGO_PKG_VERSION")`.
+   - Maximum frame size is sourced from `crate::proto::header::DEFAULT_MAX_PAYLOAD_LEN`.
+4. **Tick Handling and Migration Error Suppression**:
+   - `Server::on_tick` directly calls `self.step_migration_tick()`.
+   - If `step_migration` returns an error (such as `TableFull` on tables configured with a strict capacity ceiling), the server records the error in `migration_errors`, outputs a single warning to `eprintln!`, and suppresses further ticks (`wants_tick() == false`) until the next successful insert or capacity change.
+5. **Reply Serialization Fallback**:
+   - If `encode_frame` fails when serializing an outgoing reply frame (for example, if a payload exceeds maximum wire dimensions or collection nesting exceeds 8 levels), the server catches the failure and transmits a fallback error frame containing `ERR_INTERNAL_ERROR` (`7001`) with the client's original `request_id`.
+6. **Host Architecture Verification**:
+   - `src/main.rs` checks for `target_os = "linux"`. On non-Linux platforms (e.g. Windows), it prints `"cachedbd needs Linux (epoll)"` and exits with code 1 without printing a misleading "listening" message.
+
+### 2. Architecture Items Deferred to Later Phases
+
+1. **Unbounded Write Queue (Slow Reader Backpressure)**:
+   - Outgoing frame chunks currently append directly to each connection's `WriteQueue`. If a client stops reading from the TCP socket, the write queue can grow without bound. A future phase should introduce write queue memory ceilings and disconnect or suspend readers when limits are breached.
+2. **Per-Event Read Fairness Cap**:
+   - `handle_client_read` currently drains all available frames from the connection's read buffer in a loop. A malicious or high-throughput client sending continuous pipelined traffic could starve other active sockets. A maximum frames-per-read budget should be scheduled in future phases.
+3. **Graceful Shutdown & OS Signal Handling**:
+   - SIGINT/SIGTERM handlers and graceful drain sequences across all active client sockets are deferred to Phase 2 operations.
+4. **Connection Idle Timeout**:
+   - Connections currently remain open indefinitely until explicit EOF or fatal protocol violation. Heartbeat pings and configurable idle socket timeouts are scheduled for future connection lifecycle milestones.

@@ -317,7 +317,7 @@ fn test_migration_timer_hook_finishes_resizing() -> Result<(), Box<dyn std::erro
     use cachedb::net::event_loop::Handler;
 
     let listener = TcpListener::bind("127.0.0.1:0")?;
-    let mut server = Server::new(listener);
+    let mut server = Server::new(listener)?;
 
     // Insert keys until a resize starts
     let mut i = 0i64;

@@ -1,6 +1,7 @@
 //! Main entry point for the cachedbd server binary.
 
 use std::env;
+#[cfg(target_os = "linux")]
 use std::net::TcpListener;
 use std::process;
 
@@ -58,21 +59,28 @@ fn main() {
     let (bind, port) = parse_cli_args();
     let addr_str = format!("{bind}:{port}");
 
-    let listener = match TcpListener::bind(&addr_str) {
-        Ok(l) => l,
-        Err(err) => {
-            eprintln!("error: failed to bind to {addr_str}: {err}");
-            process::exit(1);
-        }
-    };
-
-    println!("cachedbd 0.1.0 listening on {addr_str}");
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = addr_str;
+        eprintln!("cachedbd needs Linux (epoll)");
+        process::exit(1);
+    }
 
     #[cfg(target_os = "linux")]
     {
         use cachedb::net::event_loop::EventLoop;
         use cachedb::net::sys::{EpollFlags, as_raw_fd};
         use cachedb::server::{LISTENER_TOKEN, Server};
+
+        let listener = match TcpListener::bind(&addr_str) {
+            Ok(l) => l,
+            Err(err) => {
+                eprintln!("error: failed to bind to {addr_str}: {err}");
+                process::exit(1);
+            }
+        };
+
+        println!("cachedbd 0.1.0 listening on {addr_str}");
 
         let mut event_loop = match EventLoop::new() {
             Ok(el) => el,
@@ -89,15 +97,17 @@ fn main() {
             process::exit(1);
         }
 
-        let mut server = Server::new(listener);
+        let mut server = match Server::new(listener) {
+            Ok(s) => s,
+            Err(err) => {
+                eprintln!("error: failed to initialize server: {err}");
+                process::exit(1);
+            }
+        };
+
         if let Err(err) = event_loop.run(&mut server) {
             eprintln!("error: event loop error: {err}");
             process::exit(1);
         }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        drop(listener);
     }
 }

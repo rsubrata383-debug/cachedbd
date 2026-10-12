@@ -19,8 +19,8 @@ pub use error::{
     ERR_VALUE_TOO_LARGE, ERR_WRONG_ARG_COUNT, ERR_WRONG_TYPE,
 };
 pub use handlers::{
-    compute_value_size, handle_bump, handle_drop, handle_fetch, handle_has, handle_hello,
-    handle_ping, handle_put, handle_quit, handle_size, parse_strict_i64,
+    build_hello_response, compute_value_size, handle_bump, handle_drop, handle_fetch, handle_has,
+    handle_hello, handle_ping, handle_put, handle_quit, handle_size, parse_strict_i64,
 };
 pub use parse::{
     DEFAULT_MAX_ARGS, DEFAULT_MAX_KEY_SIZE, key_arg, key_arg_with_limit, parse_command,

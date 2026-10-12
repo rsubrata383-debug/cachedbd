@@ -8,7 +8,8 @@
 )]
 
 use cachedb::cmd::{
-    ERR_INVALID_ARGUMENT, ERR_UNSUPPORTED_PROTOCOL_VERSION, ERR_WRONG_ARG_COUNT, Engine, Session,
+    ERR_AUTH_REQUIRED, ERR_INVALID_ARGUMENT, ERR_UNSUPPORTED_PROTOCOL_VERSION, ERR_WRONG_ARG_COUNT,
+    Engine, Session,
 };
 use cachedb::proto::Value;
 
@@ -216,4 +217,86 @@ fn test_commands_allowed_without_hello_first() {
     ]);
     let outcome_fetch = engine.execute(&mut session, &req_fetch);
     assert_eq!(outcome_fetch.reply, Value::Text("my_val".to_string()));
+}
+
+#[test]
+fn test_hello_require_auth_does_not_authenticate_and_no_auth_commands_work() {
+    use cachedb::cmd::handle_request;
+    use cachedb::proto::Frame;
+    use cachedb::proto::header::{FLAG_ERROR, FLAG_RESPONSE, Header, Opcode};
+
+    let mut engine = Engine::new();
+    engine.config_mut().require_auth = true;
+
+    let mut session = Session::new(55);
+    assert!(!session.authenticated);
+
+    // 1. `hello` command returns ERR_AUTH_REQUIRED (5001) without authenticating
+    let req_hello_no_token = Value::Array(vec![
+        Value::Text("hello".to_string()),
+        Value::Int(1),
+        Value::Text("client-a".to_string()),
+    ]);
+    let outcome = engine.execute(&mut session, &req_hello_no_token);
+    assert!(!outcome.close);
+    assert_eq!(outcome.reply, ERR_AUTH_REQUIRED.to_value());
+    assert!(!session.authenticated);
+
+    // With auth token provided, still returns ERR_AUTH_REQUIRED (auth backend in later phase)
+    let req_hello_with_token = Value::Array(vec![
+        Value::Text("hello".to_string()),
+        Value::Int(1),
+        Value::Text("client-a".to_string()),
+        Value::Text("secret_token".to_string()),
+    ]);
+    let outcome = engine.execute(&mut session, &req_hello_with_token);
+    assert!(!outcome.close);
+    assert_eq!(outcome.reply, ERR_AUTH_REQUIRED.to_value());
+    assert!(!session.authenticated);
+
+    // 2. Data commands (put/fetch) are rejected with ERR_AUTH_REQUIRED (5001)
+    let req_put = Value::Array(vec![
+        Value::Text("put".to_string()),
+        Value::Text("secret_key".to_string()),
+        Value::Text("secret_val".to_string()),
+    ]);
+    let outcome = engine.execute(&mut session, &req_put);
+    assert!(!outcome.close);
+    assert_eq!(outcome.reply, ERR_AUTH_REQUIRED.to_value());
+
+    let req_fetch = Value::Array(vec![
+        Value::Text("fetch".to_string()),
+        Value::Text("secret_key".to_string()),
+    ]);
+    let outcome = engine.execute(&mut session, &req_fetch);
+    assert!(!outcome.close);
+    assert_eq!(outcome.reply, ERR_AUTH_REQUIRED.to_value());
+
+    // 3. NO_AUTH commands (ping, quit) still work
+    let req_ping = Value::Array(vec![Value::Text("ping".to_string())]);
+    let outcome = engine.execute(&mut session, &req_ping);
+    assert!(!outcome.close);
+    assert_eq!(outcome.reply, Value::Text("pong".to_string()));
+
+    let req_quit = Value::Array(vec![Value::Text("quit".to_string())]);
+    let outcome = engine.execute(&mut session, &req_quit);
+    assert!(outcome.close);
+    assert_eq!(outcome.reply, Value::Text("ok".to_string()));
+
+    // 4. HELLO wire frame (Opcode 1) also returns ERR_AUTH_REQUIRED without close
+    let mut frame_session = Session::new(99);
+    let hello_frame = Frame::new(
+        Header::new(0, 1234, Opcode::Hello, 0),
+        Value::Array(vec![
+            Value::Int(1),
+            Value::Text("wire-client".to_string()),
+            Value::Text("some_token".to_string()),
+        ]),
+    );
+    let outcome = handle_request(&mut engine, &mut frame_session, &hello_frame);
+    assert!(!outcome.close);
+    assert_eq!(outcome.reply_frame.header.request_id, 1234);
+    assert_eq!(outcome.reply_frame.header.flags, FLAG_RESPONSE | FLAG_ERROR);
+    assert_eq!(outcome.reply_frame.payload, ERR_AUTH_REQUIRED.to_value());
+    assert!(!frame_session.authenticated);
 }
