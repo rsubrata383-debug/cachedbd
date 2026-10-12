@@ -24,6 +24,9 @@ pub const DEFAULT_WRITE_LOW_WATERMARK: usize = 5 * 1024 * 1024;
 /// Default maximum memory ceiling for a single connection write queue (64 MB).
 pub const DEFAULT_MAX_WRITE_CAPACITY: usize = 64 * 1024 * 1024;
 
+/// Maximum buffer size in bytes for coalescing adjacent small reply chunks in [`WriteQueue`] (64 KiB).
+pub const COALESCE_LIMIT: usize = 64 * 1024;
+
 /// Contiguous growable read buffer for receiving streaming network bytes.
 ///
 /// Data is read into the buffer from non-blocking sockets. Protocol parsers can
@@ -285,6 +288,12 @@ impl WriteQueue {
         self.total_bytes == 0
     }
 
+    /// Returns the number of distinct chunks currently held in the write queue.
+    #[must_use]
+    pub fn chunk_count(&self) -> usize {
+        self.chunks.len()
+    }
+
     /// Returns `true` if backpressure is currently active.
     ///
     /// Backpressure engages when queued bytes reach [`WriteQueue::high_watermark`],
@@ -312,7 +321,11 @@ impl WriteQueue {
         self.max_capacity
     }
 
-    /// Enqueues a borrowed byte slice by copying it into a new queue chunk.
+    /// Enqueues a borrowed byte slice by copying it into the queue.
+    ///
+    /// If the slice is small (`<= COALESCE_LIMIT`) and appending to the last queued chunk
+    /// does not exceed [`COALESCE_LIMIT`], data is coalesced into the last chunk to reduce
+    /// subsequent `write` system call overhead. Otherwise, it is appended as a distinct chunk.
     ///
     /// # Errors
     ///
@@ -335,7 +348,20 @@ impl WriteQueue {
         }
 
         self.total_bytes = new_total;
-        self.chunks.push_back(data.to_vec());
+
+        let should_coalesce = data.len() <= COALESCE_LIMIT
+            && self
+                .chunks
+                .back()
+                .is_some_and(|last| last.len().saturating_add(data.len()) <= COALESCE_LIMIT);
+
+        if should_coalesce {
+            if let Some(last) = self.chunks.back_mut() {
+                last.extend_from_slice(data);
+            }
+        } else {
+            self.chunks.push_back(data.to_vec());
+        }
 
         if self.total_bytes >= self.high_watermark {
             self.backpressured = true;
@@ -344,13 +370,18 @@ impl WriteQueue {
         Ok(())
     }
 
-    /// Enqueues an owned byte vector with zero allocation or data copying.
+    /// Enqueues an owned byte vector into the queue.
+    ///
+    /// If the chunk is small (`<= COALESCE_LIMIT`) and appending to the last queued chunk
+    /// does not exceed [`COALESCE_LIMIT`], data is coalesced into the last chunk to reduce
+    /// subsequent `write` system call overhead. Otherwise, it is pushed as a distinct chunk
+    /// with zero copy.
     ///
     /// # Errors
     ///
     /// Returns an [`io::Error`] with [`io::ErrorKind::OutOfMemory`] if the queued bytes
     /// would exceed [`WriteQueue::max_capacity`].
-    pub fn enqueue_chunk(&mut self, chunk: Vec<u8>) -> io::Result<()> {
+    pub fn enqueue_chunk(&mut self, mut chunk: Vec<u8>) -> io::Result<()> {
         if chunk.is_empty() {
             return Ok(());
         }
@@ -367,7 +398,20 @@ impl WriteQueue {
         }
 
         self.total_bytes = new_total;
-        self.chunks.push_back(chunk);
+
+        let should_coalesce = chunk.len() <= COALESCE_LIMIT
+            && self
+                .chunks
+                .back()
+                .is_some_and(|last| last.len().saturating_add(chunk.len()) <= COALESCE_LIMIT);
+
+        if should_coalesce {
+            if let Some(last) = self.chunks.back_mut() {
+                last.append(&mut chunk);
+            }
+        } else {
+            self.chunks.push_back(chunk);
+        }
 
         if self.total_bytes >= self.high_watermark {
             self.backpressured = true;
@@ -918,6 +962,281 @@ mod tests {
         let res = wq.write_to(&mut writer);
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().kind(), io::ErrorKind::WriteZero);
+
+        Ok(())
+    }
+
+    struct SingleWriteVerifier {
+        writes: usize,
+        written: Vec<u8>,
+    }
+    impl Write for SingleWriteVerifier {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.written.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_write_queue_coalesce_small_chunks() -> io::Result<()> {
+        let mut wq = WriteQueue::new();
+        let chunk_size = 20;
+        let count = 16;
+        let mut expected = Vec::new();
+        for i in 0..count {
+            let chunk = vec![(i as u8) + 1; chunk_size];
+            expected.extend_from_slice(&chunk);
+            wq.enqueue_chunk(chunk)?;
+        }
+
+        assert_eq!(
+            wq.chunk_count(),
+            1,
+            "all 16 small chunks must coalesce into 1 single chunk"
+        );
+        assert_eq!(wq.len(), 320);
+
+        let mut writer = SingleWriteVerifier {
+            writes: 0,
+            written: Vec::new(),
+        };
+        let n = wq.write_to(&mut writer)?;
+        assert_eq!(n, 320);
+        assert_eq!(
+            writer.writes, 1,
+            "exactly one write call must flush all 320 bytes"
+        );
+        assert_eq!(writer.written, expected);
+        assert_eq!(wq.len(), 0);
+        assert!(wq.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_queue_coalesce_limit_boundaries() -> io::Result<()> {
+        let mut wq = WriteQueue::new();
+
+        // 1. Push small chunk 1: 100 bytes -> chunk count = 1
+        wq.enqueue(&[1u8; 100])?;
+        assert_eq!(wq.chunk_count(), 1);
+        assert_eq!(wq.len(), 100);
+
+        // 2. Push large chunk 2: COALESCE_LIMIT + 10 bytes -> cannot merge into chunk 1.
+        // It becomes its own chunk. Chunk count = 2.
+        let large_size = COALESCE_LIMIT + 10;
+        let large_chunk = vec![2u8; large_size];
+        wq.enqueue_chunk(large_chunk)?;
+        assert_eq!(
+            wq.chunk_count(),
+            2,
+            "chunk exceeding COALESCE_LIMIT must not merge into previous chunk"
+        );
+        assert_eq!(wq.len(), 100 + large_size);
+
+        // 3. Push small chunk 3: 100 bytes.
+        // Last chunk len is COALESCE_LIMIT + 10, so last + 100 > COALESCE_LIMIT.
+        // Cannot merge into chunk 2. Chunk count = 3.
+        wq.enqueue(&[3u8; 100])?;
+        assert_eq!(
+            wq.chunk_count(),
+            3,
+            "small chunk must not merge into previous chunk if combined len exceeds COALESCE_LIMIT"
+        );
+        assert_eq!(wq.len(), 200 + large_size);
+
+        // 4. Push small chunk 4: 100 bytes.
+        // Last chunk len is 100. 100 + 100 <= COALESCE_LIMIT.
+        // Merges into chunk 3! Chunk count remains 3.
+        wq.enqueue(&[4u8; 100])?;
+        assert_eq!(
+            wq.chunk_count(),
+            3,
+            "small chunk must merge into chunk 3 since combined len <= COALESCE_LIMIT"
+        );
+        assert_eq!(wq.len(), 300 + large_size);
+
+        // 5. Push chunk 5 of exactly COALESCE_LIMIT bytes.
+        // Last chunk len is 200. 200 + COALESCE_LIMIT > COALESCE_LIMIT.
+        // Cannot merge into chunk 3. Chunk count = 4.
+        let at_limit_chunk = vec![5u8; COALESCE_LIMIT];
+        wq.enqueue(&at_limit_chunk)?;
+        assert_eq!(
+            wq.chunk_count(),
+            4,
+            "chunk of COALESCE_LIMIT bytes must not merge into chunk of 200 bytes"
+        );
+        assert_eq!(wq.len(), 300 + large_size + COALESCE_LIMIT);
+
+        let mut output = Vec::new();
+        let total_written = wq.write_to(&mut output)?;
+        assert_eq!(total_written, 300 + large_size + COALESCE_LIMIT);
+        assert_eq!(wq.len(), 0);
+        assert_eq!(wq.chunk_count(), 0);
+        assert_eq!(output.len(), total_written);
+
+        Ok(())
+    }
+
+    struct StepWriter {
+        limit: usize,
+        output: Vec<u8>,
+    }
+    impl Write for StepWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let to_write = buf.len().min(self.limit);
+            self.output.extend_from_slice(&buf[..to_write]);
+            Ok(to_write)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_write_queue_partial_writes_interleaved_pushes() -> io::Result<()> {
+        for &limit in &[1, 7, 100] {
+            let mut wq = WriteQueue::new();
+            let mut expected = Vec::new();
+
+            // Push small chunk 1 (50 bytes)
+            let c1 = vec![0xAA; 50];
+            expected.extend_from_slice(&c1);
+            wq.enqueue(&c1)?;
+            assert_eq!(wq.len(), 50);
+
+            // Partially write with StepWriter
+            let mut writer = StepWriter {
+                limit,
+                output: Vec::new(),
+            };
+            let w1 = wq.write_to(&mut writer)?;
+            assert!(w1 > 0);
+            assert_eq!(wq.len(), 50 - w1);
+
+            // Interleave push small chunk 2 (30 bytes).
+            // Front chunk was partially written, appending must maintain correct offset!
+            let c2 = vec![0xBB; 30];
+            expected.extend_from_slice(&c2);
+            wq.enqueue(&c2)?;
+            assert_eq!(wq.len(), 50 - w1 + 30);
+
+            // Partially write again
+            let w2 = wq.write_to(&mut writer)?;
+            assert!(w2 > 0);
+            assert_eq!(wq.len(), 50 - w1 + 30 - w2);
+
+            // Push large chunk 3 (> COALESCE_LIMIT)
+            let c3 = vec![0xCC; 70_000];
+            expected.extend_from_slice(&c3);
+            wq.enqueue_chunk(c3)?;
+            assert_eq!(wq.len(), 50 - w1 + 30 - w2 + 70_000);
+
+            // Partially write again
+            let w3 = wq.write_to(&mut writer)?;
+            assert!(w3 > 0);
+            assert_eq!(wq.len(), 50 - w1 + 30 - w2 + 70_000 - w3);
+
+            // Push small chunk 4 (40 bytes)
+            let c4 = vec![0xDD; 40];
+            expected.extend_from_slice(&c4);
+            wq.enqueue(&c4)?;
+            assert_eq!(wq.len(), 50 - w1 + 30 - w2 + 70_000 - w3 + 40);
+
+            // Drain completely
+            while !wq.is_empty() {
+                let cur_len = wq.len();
+                let step = wq.write_to(&mut writer)?;
+                assert!(step > 0);
+                assert_eq!(wq.len(), cur_len - step);
+            }
+
+            assert_eq!(wq.len(), 0);
+            assert!(wq.is_empty());
+            assert_eq!(writer.output.len(), expected.len());
+            assert_eq!(writer.output, expected);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_queue_property_random_coalesce_and_partial_writes() -> io::Result<()> {
+        use crate::bench::XorShift64;
+
+        let mut rng = XorShift64::new(0x1234_5678_9ABC_DEF1);
+
+        for _ in 0..200 {
+            let mut wq = WriteQueue::new();
+            let mut expected = Vec::new();
+
+            let num_pushes = rng.gen_range(1, 10);
+            for _ in 0..num_pushes {
+                let size = rng.gen_range(0, 100_001);
+                let mut chunk = Vec::with_capacity(size);
+                for i in 0..size {
+                    chunk.push((i % 251) as u8);
+                }
+                expected.extend_from_slice(&chunk);
+                wq.enqueue_chunk(chunk)?;
+            }
+
+            assert_eq!(wq.len(), expected.len());
+
+            let write_limit = rng.gen_range(1, 65537);
+            let mut writer = StepWriter {
+                limit: write_limit,
+                output: Vec::new(),
+            };
+
+            while !wq.is_empty() {
+                let before_len = wq.len();
+                let n = wq.write_to(&mut writer)?;
+                assert!(n > 0, "write_to must make forward progress");
+                assert_eq!(wq.len(), before_len - n);
+            }
+
+            assert_eq!(wq.len(), 0);
+            assert!(wq.is_empty());
+            assert_eq!(writer.output.len(), expected.len());
+            assert_eq!(writer.output, expected);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_queue_zero_length_push() -> io::Result<()> {
+        let mut wq = WriteQueue::new();
+        assert_eq!(wq.chunk_count(), 0);
+        assert_eq!(wq.len(), 0);
+
+        wq.enqueue(&[])?;
+        assert_eq!(wq.chunk_count(), 0);
+        assert_eq!(wq.len(), 0);
+
+        wq.enqueue_chunk(Vec::new())?;
+        assert_eq!(wq.chunk_count(), 0);
+        assert_eq!(wq.len(), 0);
+
+        wq.enqueue(b"data")?;
+        assert_eq!(wq.chunk_count(), 1);
+        assert_eq!(wq.len(), 4);
+
+        wq.enqueue(&[])?;
+        wq.enqueue_chunk(Vec::new())?;
+        assert_eq!(wq.chunk_count(), 1);
+        assert_eq!(wq.len(), 4);
+
+        let mut output = Vec::new();
+        let n = wq.write_to(&mut output)?;
+        assert_eq!(n, 4);
+        assert_eq!(&output[..], b"data");
+        assert_eq!(wq.len(), 0);
+        assert_eq!(wq.chunk_count(), 0);
 
         Ok(())
     }

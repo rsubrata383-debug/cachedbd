@@ -129,3 +129,10 @@
 ### Telemetry Counters & `connections_closed` / `nodelay_failures`
 - `ServerStats.connections_closed`: Monotonically increasing `AtomicU64` counter incremented whenever a client connection is terminated and removed from the server for any reason (clean client quit, EOF completion, protocol error, disconnect, or idle sweep).
 - `ServerStats.nodelay_failures`: Monotonically increasing `AtomicU64` counter incremented whenever setting `TCP_NODELAY` on an accepted client connection fails (the connection continues without crashing).
+
+### WriteQueue Reply Coalescing (`COALESCE_LIMIT`)
+To avoid issuing individual `write` syscalls per frame in pipelined batches, `WriteQueue` coalesces small adjacent responses.
+When a chunk is enqueued, if the queue is non-empty, `new.len() <= COALESCE_LIMIT` (64 KiB), and `last_chunk.len() + new.len() <= COALESCE_LIMIT`,
+the new bytes are appended directly into the existing last chunk's buffer instead of creating a distinct queue element.
+If the last chunk is also the front chunk and was partially written, appending extends the unwritten tail while preserving `front_offset`.
+Large payloads exceeding 64 KiB bypass coalescing to preserve zero-copy transfer, and backpressure watermarks remain strictly enforced.

@@ -1712,3 +1712,29 @@ The ~41 ms latency per batch is the classic interaction between **Nagle's algori
 - In `src/server.rs`, `handle_client_read` processes all pipelined frames received in the read buffer, enqueuing serialized reply frames into `WriteQueue` via `conn.send_chunk(out)`.
 - The server performs one flush per event-loop turn by calling `self.handle_client_write(token, event_loop)` once after processing the batch.
 - However, inside `WriteQueue::write_to` (`src/net/buffer.rs`), a `while let Some(front) = self.chunks.front()` loop issues a separate `writer.write()` syscall for every individual frame chunk in the queue rather than using vectored I/O (`writev`) or a coalescing write buffer. While `TCP_NODELAY` prevents Nagle stalls, issuing $N$ individual syscalls per batch incurs avoidable context-switch overhead that could be streamlined in a future optimization phase.
+
+---
+
+## 2026-10-12: Week 8 Step 4d — WriteQueue Reply Coalescing Optimization
+
+### 1. Motivation
+During review and profiling following the TCP_NODELAY fix, we noted that while the server initiates socket writing only once per event loop turn, `WriteQueue::write_to` executed one `writer.write()` syscall per queued chunk. For a batch of 16 pipelined replies, this meant 16 separate `write` syscalls per batch, imposing needless kernel boundary transition overhead.
+
+### 2. The Coalescing Rule and Limit
+In `WriteQueue` (`src/net/buffer.rs`), `enqueue` and `enqueue_chunk` now coalesce adjacent small chunks:
+- If the queue is non-empty (`self.chunks.back()` is present),
+- And the incoming chunk is small: `chunk.len() <= COALESCE_LIMIT` (where `COALESCE_LIMIT = 64 * 1024` / 64 KiB),
+- And `last_chunk.len() + chunk.len() <= COALESCE_LIMIT`,
+the new bytes are appended directly into the existing last chunk (`last.extend_from_slice` / `last.append`).
+Otherwise, the chunk is pushed as its own independent queue chunk.
+
+### 3. Byte Accounting & Partial Write Safety
+- If the last chunk is also the front chunk and has already been partially written, appending extends the unwritten tail while preserving `front_offset` at the unwritten position.
+- Total byte counting (`total_bytes`), `len()`, `is_empty()`, and backpressure watermarks remain strictly exact.
+- Zero-length pushes (`&[]` or empty `Vec`) perform early return and do not create empty chunks.
+- Large replies (e.g. 256 KiB fetch responses) exceed `COALESCE_LIMIT` and bypass coalescing entirely, preserving zero-copy ownership transfer.
+
+### 4. Non-Goals & Architecture Scope
+- **No Vectored I/O (`writev`)**: Avoided OS-specific `writev` syscall complexity.
+- **No Unsafe Code**: All buffer management uses safe standard library `Vec` APIs.
+- **No Protocol or Read-Side Changes**: Wire protocol framing, header encoding, and read buffer parsing remain entirely untouched.
