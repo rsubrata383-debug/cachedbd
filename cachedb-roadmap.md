@@ -171,17 +171,17 @@ cachedb/
 
 ### Week 7: Commands, part 1
 
-- [ ] Implement the command dispatcher (table of name to handler, with arity and flags).
-- [ ] Implement `ping`, `put`, `fetch`, `drop`, `has`, `size` (see Appendix B).
-- [ ] Implement `bump` (atomic integer increment/decrement) with overflow checks.
-- [ ] Implement `put` options: only-if-absent, only-if-present.
-- [ ] Implement structured errors with codes.
+- [x] Implement the command dispatcher (table of name to handler, with arity and flags).
+- [x] Implement `ping`, `put`, `fetch`, `drop`, `has`, `size` (see Appendix B).
+- [x] Implement `bump` (atomic integer increment/decrement) with overflow checks.
+- [x] Implement `put` options: only-if-absent, only-if-present.
+- [x] Implement structured errors with codes.
 
 ### Week 8: Client and tooling
 
-- [ ] Build `cachedb-cli`, an interactive client with history, pipelined script mode, and pretty printing.
-- [ ] Build a small client library (one language) with connection pooling and pipelining.
-- [ ] Build a basic load generator (`cachedb-bench`) with configurable key size, value size, read/write ratio, and connection count.
+- [x] Build `cachedb-cli`, an interactive client with history, pipelined script mode, and pretty printing.
+- [] Build a small client library (one language) with connection pooling and pipelining.
+- [] Build a basic load generator (`cachedb-bench`) with configurable key size, value size, read/write ratio, and connection count.
 - [ ] Write the first benchmark report and commit it.
 - [ ] Tag `v0.1`.
 

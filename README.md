@@ -1,13 +1,14 @@
 # cachedb
 
 > **Status: Active Development (Phase 1)**  
-> *cachedb is currently under heavy development and is not yet production-ready. APIs, internal layouts, and wire structures are evolving according to the project roadmap.*
+> _cachedb is currently under heavy development and is not yet production-ready. APIs, internal layouts, and wire structures are evolving according to the project roadmap._
 
 ---
 
 `cachedb` is a high-performance, single-threaded, event-driven, in-memory key-value data store built from the ground up in Rust. Designed for predictable sub-millisecond latencies and high concurrency, it features its own custom binary wire protocol, command dispatch engine, streaming I/O buffers, and write-ahead persistence layer.
 
 Target workloads include:
+
 - Low-latency **caching** and **session stores**
 - In-memory **work queues** with atomic operations
 - Real-time **leaderboards** and counters
@@ -45,15 +46,15 @@ Target workloads include:
 
 Progress is tracked through the milestone checklist in [`cachedb-roadmap.md`](cachedb-roadmap.md) and detailed design decisions in [`docs/journal.md`](docs/journal.md).
 
-| Phase | Milestone | Status | Key Deliverables |
-| :--- | :--- | :---: | :--- |
-| **Phase 0** | **Decisions & Design** | **Completed** | Vision, threading model, and frozen `v0.1` specifications. |
-| **Phase 1** | **Week 3: Networking Basics** | **Completed** | Linux `epoll` syscall wrapper, `EventLoop`, non-blocking echo server. |
-| **Phase 1** | **Week 4: Buffers & Connections** | **Completed** | `ConnectionTable`, flow-control backpressure, 10,000 idle connection scale test. |
-| **Phase 1** | **Week 5: Wire Protocol** | **Done** | Binary frame encode/decode, streaming chunk parser, HELLO negotiation, limits, fuzz testing. |
-| **Phase 1** | **Week 6: Hash Table** | **Done** | Custom Robin Hood hash table with incremental background resizing. |
-| **Phase 1** | **Week 7: Core Commands** | **In progress** | `ping`, `put`, `fetch`, `drop`, `has`, `size`, `bump`. |
-| **Phase 1** | **Week 8: Tooling & v0.1 Release** | *Upcoming* | CLI shell (`cachedb-cli`), bench tool (`cachedb-bench`), v0.1 release tag. |
+| Phase       | Milestone                          |    Status     | Key Deliverables                                                                             |
+| :---------- | :--------------------------------- | :-----------: | :------------------------------------------------------------------------------------------- |
+| **Phase 0** | **Decisions & Design**             | **Completed** | Vision, threading model, and frozen `v0.1` specifications.                                   |
+| **Phase 1** | **Week 3: Networking Basics**      | **Completed** | Linux `epoll` syscall wrapper, `EventLoop`, non-blocking echo server.                        |
+| **Phase 1** | **Week 4: Buffers & Connections**  | **Completed** | `ConnectionTable`, flow-control backpressure, 10,000 idle connection scale test.             |
+| **Phase 1** | **Week 5: Wire Protocol**          | **Completed** | Binary frame encode/decode, streaming chunk parser, HELLO negotiation, limits, fuzz testing. |
+| **Phase 1** | **Week 6: Hash Table**             | **Completed** | Custom Robin Hood hash table with incremental background resizing.                           |
+| **Phase 1** | **Week 7: Core Commands**          | **Completed** | `ping`, `put`, `fetch`, `drop`, `has`, `size`, `bump`.                                       |
+| **Phase 1** | **Week 8: Tooling & v0.1 Release** |  **In Prograce**   | CLI shell (`cachedb-cli`), bench tool (`cachedb-bench`), v0.1 release tag.                   |
 
 ---
 
@@ -198,6 +199,7 @@ cargo doc --no-deps
 ## License
 
 Dual-licensed under either:
+
 - **MIT License** ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 - **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
 
