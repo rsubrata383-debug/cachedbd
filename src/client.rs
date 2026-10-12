@@ -297,6 +297,12 @@ fn connect_stream(
     Ok(stream)
 }
 
+/// Maximum number of commands sent in a single pipelined transmission chunk (256 commands).
+pub const PIPELINE_CHUNK_COMMANDS: usize = 256;
+
+/// Maximum cumulative encoded frame bytes sent in a single pipelined transmission chunk (256 KB).
+pub const PIPELINE_CHUNK_BYTES: usize = 256 * 1024;
+
 /// Synchronous, blocking client connection to a Cachedb server.
 #[derive(Debug)]
 pub struct Client {
@@ -305,6 +311,7 @@ pub struct Client {
     server_info: ServerInfo,
     next_request_id: u32,
     buf: Vec<u8>,
+    read_cursor: usize,
     is_broken: bool,
 }
 
@@ -371,6 +378,7 @@ impl Client {
             },
             next_request_id: 1,
             buf: Vec::new(),
+            read_cursor: 0,
             is_broken: false,
         };
 
@@ -496,7 +504,17 @@ impl Client {
         })?;
 
         let reply = self.read_frame()?;
+        match self.validate_reply(reply, req_id)? {
+            Ok(val) => Ok(val),
+            Err(server_err) => Err(server_err),
+        }
+    }
 
+    fn validate_reply(
+        &mut self,
+        reply: Frame,
+        expected_id: u32,
+    ) -> Result<Result<Value, ClientError>, ClientError> {
         if reply.header.flags & FLAG_RESPONSE == 0 {
             self.is_broken = true;
             return Err(ClientError::Protocol(
@@ -504,10 +522,10 @@ impl Client {
             ));
         }
 
-        if reply.header.request_id != req_id {
+        if reply.header.request_id != expected_id {
             self.is_broken = true;
             return Err(ClientError::Protocol(format!(
-                "mismatched request_id: expected {req_id}, got {}",
+                "mismatched request_id: expected {expected_id}, got {}",
                 reply.header.request_id
             )));
         }
@@ -522,7 +540,7 @@ impl Client {
 
         if reply.header.flags & FLAG_ERROR != 0 || matches!(reply.payload, Value::Error { .. }) {
             if let Value::Error { code, message } = reply.payload {
-                return Err(ClientError::Server { code, message });
+                return Ok(Err(ClientError::Server { code, message }));
             }
             self.is_broken = true;
             return Err(ClientError::Protocol(
@@ -530,11 +548,14 @@ impl Client {
             ));
         }
 
-        Ok(reply.payload)
+        Ok(Ok(reply.payload))
     }
 
     /// Pipelines multiple command arrays in a single network transmission, returning
     /// results in exact execution order.
+    ///
+    /// Commands are transmitted in chunks of up to [`PIPELINE_CHUNK_COMMANDS`] commands
+    /// or [`PIPELINE_CHUNK_BYTES`] bytes to prevent server-side write buffer deadlock.
     ///
     /// Transport or protocol failures terminate the pipeline with an outer [`Err(ClientError)`](ClientError).
     /// Per-command logical server errors are returned in individual elements.
@@ -572,60 +593,58 @@ impl Client {
             return Err(ClientError::ConnectionClosed);
         }
 
-        let mut expected_ids = Vec::with_capacity(commands.len());
-        let mut out = Vec::new();
+        let mut results = Vec::with_capacity(commands.len());
+        let mut iter = commands.into_iter();
+        let mut pending_cmd = iter.next();
 
-        for cmd in commands {
-            let req_id = self.next_request_id;
-            self.next_request_id = self.next_request_id.wrapping_add(1);
-            expected_ids.push(req_id);
+        while let Some(cmd) = pending_cmd.take() {
+            let mut chunk_expected_ids = Vec::new();
+            let mut chunk_bytes = Vec::new();
 
-            let header = Header::new(0, req_id, Opcode::Command, 0);
-            let frame = Frame::new(header, Value::Array(cmd));
-
-            encode_frame(&frame, &mut out).map_err(|e| {
-                self.is_broken = true;
-                ClientError::Protocol(e.message().to_string())
-            })?;
-        }
-
-        self.stream.write_all(&out).map_err(|e| {
-            self.is_broken = true;
-            map_io_error(e)
-        })?;
-
-        let mut results = Vec::with_capacity(expected_ids.len());
-
-        for expected_id in expected_ids {
-            let reply = self.read_frame()?;
-
-            if reply.header.flags & FLAG_RESPONSE == 0 {
-                self.is_broken = true;
-                return Err(ClientError::Protocol(
-                    "missing RESPONSE flag in reply".to_string(),
-                ));
-            }
-
-            if reply.header.request_id != expected_id {
-                self.is_broken = true;
-                return Err(ClientError::Protocol(format!(
-                    "mismatched request_id: expected {expected_id}, got {}",
-                    reply.header.request_id
-                )));
-            }
-
-            if reply.header.flags & FLAG_ERROR != 0 || matches!(reply.payload, Value::Error { .. })
-            {
-                if let Value::Error { code, message } = reply.payload {
-                    results.push(Err(ClientError::Server { code, message }));
-                } else {
+            let mut current = Some(cmd);
+            while let Some(c) = current.take() {
+                let req_id = self.next_request_id;
+                let header = Header::new(0, req_id, Opcode::Command, 0);
+                let frame = Frame::new(header, Value::Array(c));
+                let mut encoded = Vec::new();
+                encode_frame(&frame, &mut encoded).map_err(|e| {
                     self.is_broken = true;
-                    return Err(ClientError::Protocol(
-                        "error flag set but payload is not an Error value".to_string(),
-                    ));
+                    ClientError::Protocol(e.message().to_string())
+                })?;
+
+                if !chunk_expected_ids.is_empty()
+                    && (chunk_expected_ids.len() >= PIPELINE_CHUNK_COMMANDS
+                        || chunk_bytes.len() + encoded.len() > PIPELINE_CHUNK_BYTES)
+                {
+                    if let Value::Array(arr) = frame.payload {
+                        pending_cmd = Some(arr);
+                    }
+                    break;
                 }
-            } else {
-                results.push(Ok(reply.payload));
+
+                self.next_request_id = self.next_request_id.wrapping_add(1);
+                chunk_expected_ids.push(req_id);
+                chunk_bytes.extend_from_slice(&encoded);
+
+                if chunk_expected_ids.len() >= PIPELINE_CHUNK_COMMANDS
+                    || chunk_bytes.len() >= PIPELINE_CHUNK_BYTES
+                {
+                    pending_cmd = iter.next();
+                    break;
+                }
+
+                current = iter.next();
+            }
+
+            self.stream.write_all(&chunk_bytes).map_err(|e| {
+                self.is_broken = true;
+                map_io_error(e)
+            })?;
+
+            for expected_id in chunk_expected_ids {
+                let reply = self.read_frame()?;
+                let res = self.validate_reply(reply, expected_id)?;
+                results.push(res);
             }
         }
 
@@ -956,18 +975,28 @@ impl Client {
             return Err(ClientError::ConnectionClosed);
         }
 
-        let mut temp = [0u8; 8192];
+        let mut temp = vec![0u8; 64 * 1024];
         let max_payload_len = u32::try_from(self.config.max_reply_size).unwrap_or(u32::MAX);
 
         loop {
-            if self.buf.len() >= HEADER_LEN {
-                match Header::decode_with_max_len(&self.buf[..HEADER_LEN], max_payload_len) {
+            let available = &self.buf[self.read_cursor..];
+            if available.len() >= HEADER_LEN {
+                match Header::decode_with_max_len(&available[..HEADER_LEN], max_payload_len) {
                     Ok(Decoded::Complete(hdr)) => {
                         let total_len = HEADER_LEN + hdr.payload_len as usize;
-                        if self.buf.len() >= total_len {
-                            match decode_frame_with_limit(&self.buf, max_payload_len) {
+                        if available.len() >= total_len {
+                            match decode_frame_with_limit(available, max_payload_len) {
                                 Ok(Decoded::Complete((frame, used))) => {
-                                    self.buf.drain(..used);
+                                    self.read_cursor += used;
+                                    if self.read_cursor == self.buf.len() {
+                                        self.buf.clear();
+                                        self.read_cursor = 0;
+                                    } else if self.read_cursor > self.buf.len() / 2 {
+                                        self.buf.copy_within(self.read_cursor.., 0);
+                                        let remaining = self.buf.len() - self.read_cursor;
+                                        self.buf.truncate(remaining);
+                                        self.read_cursor = 0;
+                                    }
                                     return Ok(frame);
                                 }
                                 Ok(Decoded::NeedMore) => {}
@@ -992,6 +1021,14 @@ impl Client {
                         return Err(ClientError::Protocol(e.message().to_string()));
                     }
                 }
+            }
+
+            // Compact before reading if read cursor is past half the buffer
+            if self.read_cursor > 0 && self.read_cursor > self.buf.len() / 2 {
+                self.buf.copy_within(self.read_cursor.., 0);
+                let remaining = self.buf.len() - self.read_cursor;
+                self.buf.truncate(remaining);
+                self.read_cursor = 0;
             }
 
             match self.stream.read(&mut temp) {

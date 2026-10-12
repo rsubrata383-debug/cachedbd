@@ -39,10 +39,16 @@ Communication is strictly framed using the 14-byte wire header specified in `doc
 - Single Commands:
   - `Client::command(&mut self, args: Vec<Value>) -> Result<Value, ClientError>` builds a `Value::Array`, writes the frame, awaits the response, and verifies `FLAG_RESPONSE` and `request_id`.
   - Logical server errors (`FLAG_ERROR` set with `Value::Error { code, message }`) return `Err(ClientError::Server { code, message })`. Logical errors do **not** break the transport connection.
-- Pipelining:
-  - `Client::pipeline(&mut self, commands: Vec<Vec<Value>>) -> Result<Vec<Result<Value, ClientError>>, ClientError>` batches all command frames into a single output buffer and transmits them with one `write_all`.
-  - Replies are received and matched in exact transmission order.
-  - Transport or protocol violations return an outer `Err(ClientError)`. Per-command logical errors are captured in the inner `Result<Value, ClientError>`.
+- Pipelining & Chunking:
+  - `Client::pipeline(&mut self, commands: Vec<Vec<Value>>) -> Result<Vec<Result<Value, ClientError>>, ClientError>` batches commands into bounded chunks to prevent socket buffer deadlocks when the peer stops consuming writes while replies remain unread.
+  - Chunk limits: `PIPELINE_CHUNK_COMMANDS = 256` and `PIPELINE_CHUNK_BYTES = 256 * 1024` (256 KB). If a single command exceeds 256 KB, it forms its own independent chunk.
+  - For each chunk: the client writes the chunk's frames, reads and validates all corresponding replies, and stores them before proceeding to write subsequent chunks.
+  - Zero cloning: command value vectors are consumed directly during encoding.
+  - Validation: Both single commands and pipeline chunks invoke shared `validate_reply` which verifies `FLAG_RESPONSE`, `request_id`, opcode matches `Opcode::Command`, and maps structured server errors.
+- Read Buffer with Cursor:
+  - Instead of draining the buffer on every frame (`drain(..used)`), a `read_cursor` tracks the consumption point.
+  - Socket data is read in 64 KB blocks (`[0u8; 64 * 1024]`).
+  - Compaction shifts unconsumed bytes to the front only when `read_cursor > buf.len() / 2` or when the buffer is empty, amortizing memory movement to $O(1)$ per byte.
 
 ## 4. Error Mapping & Broken Connection Handling
 

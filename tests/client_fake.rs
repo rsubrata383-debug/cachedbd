@@ -20,127 +20,16 @@ mod common;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::net::TcpListener;
+use std::thread;
 use std::time::Duration;
 
 use cachedb::client::{Client, ClientConfig, ClientError};
-use cachedb::cmd::dispatch::{Engine, Session};
-use cachedb::cmd::request::handle_request;
 use cachedb::proto::decode::decode_frame;
 use cachedb::proto::encode::encode_frame;
 use cachedb::proto::header::{FLAG_RESPONSE, Header, Opcode};
 use cachedb::proto::{Decoded, Frame, Value};
-use common::XorShift64;
-
-/// Lightweight multi-threaded blocking test server using only `std`.
-struct TestBlockingServer {
-    addr: SocketAddr,
-    shutdown: Arc<AtomicBool>,
-    server_thread: Option<JoinHandle<()>>,
-}
-
-impl TestBlockingServer {
-    fn start() -> Self {
-        Self::start_with_engine(Arc::new(Mutex::new(Engine::new())))
-    }
-
-    fn start_with_engine(engine: Arc<Mutex<Engine>>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
-        let addr = listener.local_addr().expect("local addr");
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_clone = Arc::clone(&shutdown);
-
-        listener
-            .set_nonblocking(true)
-            .expect("set nonblocking for accept polling");
-
-        let server_thread = thread::spawn(move || {
-            let mut client_threads = Vec::new();
-
-            while !shutdown_clone.load(Ordering::Relaxed) {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        let eng = Arc::clone(&engine);
-                        let handle = thread::spawn(move || {
-                            Self::handle_client(stream, &eng);
-                        });
-                        client_threads.push(handle);
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(2));
-                    }
-                    Err(_) => break,
-                }
-            }
-
-            for handle in client_threads {
-                let _ = handle.join();
-            }
-        });
-
-        Self {
-            addr,
-            shutdown,
-            server_thread: Some(server_thread),
-        }
-    }
-
-    fn addr(&self) -> SocketAddr {
-        self.addr
-    }
-
-    fn handle_client(mut stream: TcpStream, engine: &Arc<Mutex<Engine>>) {
-        let _ = stream.set_nonblocking(false);
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-        let mut session = Session::new(1);
-        let mut buf = Vec::new();
-        let mut temp = [0u8; 8192];
-
-        loop {
-            // Process any fully buffered frames
-            while !buf.is_empty() {
-                match decode_frame(&buf) {
-                    Ok(Decoded::Complete((frame, used))) => {
-                        buf.drain(..used);
-                        let outcome = {
-                            let mut eng = engine.lock().expect("lock engine");
-                            handle_request(&mut eng, &mut session, &frame)
-                        };
-
-                        let mut out = Vec::new();
-                        encode_frame(&outcome.reply_frame, &mut out).expect("encode reply");
-                        if stream.write_all(&out).is_err() {
-                            return;
-                        }
-
-                        if outcome.close {
-                            return;
-                        }
-                    }
-                    Ok(Decoded::NeedMore) => break,
-                    Err(_) => return,
-                }
-            }
-
-            match stream.read(&mut temp) {
-                Ok(0) | Err(_) => return,
-                Ok(n) => buf.extend_from_slice(&temp[..n]),
-            }
-        }
-    }
-}
-
-impl Drop for TestBlockingServer {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.server_thread.take() {
-            let _ = handle.join();
-        }
-    }
-}
+use common::{TestBlockingServer, XorShift64};
 
 // 1. connect + hello: verifies server_info metadata
 #[test]
@@ -674,4 +563,241 @@ fn test_model_20k_random_commands() {
             _ => unreachable!(),
         }
     }
+}
+
+// 18. pipeline chunking prevents deadlock with server that restricts reads
+#[test]
+fn test_client_pipeline_chunking_deadlock_prevention() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+    let addr = listener.local_addr().expect("local addr");
+
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut buf = Vec::new();
+        let mut temp = [0u8; 8192];
+
+        // 1. Read hello and reply
+        loop {
+            match decode_frame(&buf) {
+                Ok(Decoded::Complete((frame, used))) => {
+                    buf.drain(..used);
+                    assert_eq!(frame.header.opcode, Opcode::Hello);
+                    let hello_reply = Frame::new(
+                        Header::new(FLAG_RESPONSE, frame.header.request_id, Opcode::Hello, 0),
+                        Value::Map(vec![
+                            (
+                                Value::Text("server_name".to_string()),
+                                Value::Text("cachedbd".to_string()),
+                            ),
+                            (
+                                Value::Text("server_version".to_string()),
+                                Value::Text("0.1.0".to_string()),
+                            ),
+                            (Value::Text("protocol_version".to_string()), Value::Int(1)),
+                            (Value::Text("client_id".to_string()), Value::Int(1)),
+                        ]),
+                    );
+                    let mut out = Vec::new();
+                    encode_frame(&hello_reply, &mut out).expect("encode");
+                    stream.write_all(&out).expect("write");
+                    break;
+                }
+                Ok(Decoded::NeedMore) => {
+                    let n = stream.read(&mut temp).expect("read");
+                    buf.extend_from_slice(&temp[..n]);
+                }
+                Err(e) => panic!("error {e:?}"),
+            }
+        }
+
+        // 2. Read exactly 256 commands (Chunk 1) and send their replies BEFORE reading chunk 2!
+        for expected_id in 2..(2 + 256) {
+            loop {
+                match decode_frame(&buf) {
+                    Ok(Decoded::Complete((frame, used))) => {
+                        buf.drain(..used);
+                        assert_eq!(frame.header.request_id, expected_id as u32);
+                        let reply = Frame::new(
+                            Header::new(FLAG_RESPONSE, frame.header.request_id, Opcode::Command, 0),
+                            Value::Text("pong".to_string()),
+                        );
+                        let mut out = Vec::new();
+                        encode_frame(&reply, &mut out).expect("encode");
+                        stream.write_all(&out).expect("write reply");
+                        break;
+                    }
+                    Ok(Decoded::NeedMore) => {
+                        let n = stream.read(&mut temp).expect("read");
+                        buf.extend_from_slice(&temp[..n]);
+                    }
+                    Err(e) => panic!("error {e:?}"),
+                }
+            }
+        }
+
+        // 3. Now read the remaining 44 commands (Chunk 2, 300 total) and reply
+        for expected_id in (2 + 256)..(2 + 300) {
+            loop {
+                match decode_frame(&buf) {
+                    Ok(Decoded::Complete((frame, used))) => {
+                        buf.drain(..used);
+                        assert_eq!(frame.header.request_id, expected_id as u32);
+                        let reply = Frame::new(
+                            Header::new(FLAG_RESPONSE, frame.header.request_id, Opcode::Command, 0),
+                            Value::Text("pong".to_string()),
+                        );
+                        let mut out = Vec::new();
+                        encode_frame(&reply, &mut out).expect("encode");
+                        stream.write_all(&out).expect("write reply");
+                        break;
+                    }
+                    Ok(Decoded::NeedMore) => {
+                        let n = stream.read(&mut temp).expect("read");
+                        buf.extend_from_slice(&temp[..n]);
+                    }
+                    Err(e) => panic!("error {e:?}"),
+                }
+            }
+        }
+    });
+
+    let config = ClientConfig::new().with_read_timeout(Some(Duration::from_secs(3)));
+    let mut client = Client::connect_with(addr, config).expect("connect");
+
+    let mut commands = Vec::with_capacity(300);
+    for _ in 0..300 {
+        commands.push(vec![Value::Text("ping".to_string())]);
+    }
+
+    let replies = client.pipeline(commands).expect("pipeline 300");
+    assert_eq!(replies.len(), 300);
+    for r in replies {
+        assert_eq!(r.expect("pong"), Value::Text("pong".to_string()));
+    }
+}
+
+// 19. bad server sends reply with wrong opcode in middle of pipeline -> Protocol error and client broken
+#[test]
+fn test_client_pipeline_wrong_opcode_breaks_client() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+    let addr = listener.local_addr().expect("local addr");
+
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut buf = Vec::new();
+        let mut temp = [0u8; 8192];
+
+        // Handshake
+        loop {
+            match decode_frame(&buf) {
+                Ok(Decoded::Complete((frame, used))) => {
+                    buf.drain(..used);
+                    let hello_reply = Frame::new(
+                        Header::new(FLAG_RESPONSE, frame.header.request_id, Opcode::Hello, 0),
+                        Value::Map(vec![
+                            (
+                                Value::Text("server_name".to_string()),
+                                Value::Text("cachedbd".to_string()),
+                            ),
+                            (
+                                Value::Text("server_version".to_string()),
+                                Value::Text("0.1.0".to_string()),
+                            ),
+                            (Value::Text("protocol_version".to_string()), Value::Int(1)),
+                            (Value::Text("client_id".to_string()), Value::Int(1)),
+                        ]),
+                    );
+                    let mut out = Vec::new();
+                    encode_frame(&hello_reply, &mut out).expect("encode");
+                    stream.write_all(&out).expect("write");
+                    break;
+                }
+                Ok(Decoded::NeedMore) => {
+                    let n = stream.read(&mut temp).expect("read");
+                    buf.extend_from_slice(&temp[..n]);
+                }
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+
+        // Read 2 commands
+        let mut cmd_count = 0;
+        loop {
+            match decode_frame(&buf) {
+                Ok(Decoded::Complete((frame, used))) => {
+                    buf.drain(..used);
+                    cmd_count += 1;
+                    let opcode = if cmd_count == 1 {
+                        Opcode::Command // normal
+                    } else {
+                        Opcode::Push // WRONG opcode for a command response!
+                    };
+                    let reply = Frame::new(
+                        Header::new(FLAG_RESPONSE, frame.header.request_id, opcode, 0),
+                        Value::Text("pong".to_string()),
+                    );
+                    let mut out = Vec::new();
+                    encode_frame(&reply, &mut out).expect("encode");
+                    let _ = stream.write_all(&out);
+                    if cmd_count == 2 {
+                        break;
+                    }
+                }
+                Ok(Decoded::NeedMore) => {
+                    let n = stream.read(&mut temp).expect("read");
+                    buf.extend_from_slice(&temp[..n]);
+                }
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+    });
+
+    let mut client = Client::connect(addr).expect("connect");
+    let commands = vec![
+        vec![Value::Text("ping".to_string())],
+        vec![Value::Text("ping".to_string())],
+    ];
+
+    let res = client.pipeline(commands);
+    match res.unwrap_err() {
+        ClientError::Protocol(msg) => {
+            assert!(msg.contains("unexpected opcode"));
+        }
+        other => panic!("expected Protocol error, got {other:?}"),
+    }
+
+    // Assert client is broken: subsequent call immediately returns ConnectionClosed
+    let post_err = client.ping().unwrap_err();
+    assert_eq!(post_err, ClientError::ConnectionClosed);
+}
+
+// 20. read buffer: 20,000 small replies in one pipeline and a 10 MB reply
+#[test]
+fn test_client_read_buffer_20k_small_replies_and_10mb_reply() {
+    let server = TestBlockingServer::start();
+    let mut client = Client::connect(server.addr()).expect("connect");
+
+    // 20,000 small replies in one pipeline
+    let total = 20_000;
+    let mut commands = Vec::with_capacity(total);
+    for _ in 0..total {
+        commands.push(vec![Value::Text("ping".to_string())]);
+    }
+
+    let replies = client.pipeline(commands).expect("pipeline 20k");
+    assert_eq!(replies.len(), total);
+    for r in replies {
+        assert_eq!(r.expect("pong"), Value::Text("pong".to_string()));
+    }
+
+    // 10 MB reply
+    let payload_10mb = vec![0xAB; 10 * 1024 * 1024];
+    assert!(
+        client
+            .put(b"big_key", Value::Bytes(payload_10mb.clone()))
+            .expect("put 10mb")
+    );
+
+    let fetched = client.fetch(b"big_key").expect("fetch 10mb");
+    assert_eq!(fetched, Some(Value::Bytes(payload_10mb)));
 }

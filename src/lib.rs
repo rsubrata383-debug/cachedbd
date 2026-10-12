@@ -1,6 +1,7 @@
 //! Cachedb: an in-memory database built from scratch.
 
 pub mod admin;
+pub mod cli;
 pub mod client;
 pub mod cmd;
 pub mod net;

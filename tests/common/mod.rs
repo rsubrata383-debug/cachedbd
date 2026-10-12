@@ -140,3 +140,134 @@ impl Drop for TestServer {
         self.stop();
     }
 }
+
+/// Portable, blocking test server using only `std` threads and sockets.
+#[allow(dead_code)]
+pub struct TestBlockingServer {
+    addr: std::net::SocketAddr,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    server_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[allow(dead_code)]
+impl TestBlockingServer {
+    /// Starts a test server backed by a fresh default [`cachedb::cmd::Engine`].
+    pub fn start() -> Self {
+        Self::start_with_engine(std::sync::Arc::new(std::sync::Mutex::new(
+            cachedb::cmd::Engine::new(),
+        )))
+    }
+
+    /// Starts a test server backed by a shared [`cachedb::cmd::Engine`].
+    pub fn start_with_engine(
+        engine: std::sync::Arc<std::sync::Mutex<cachedb::cmd::Engine>>,
+    ) -> Self {
+        use std::net::TcpListener;
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("local addr");
+        let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown_clone = std::sync::Arc::clone(&shutdown);
+
+        listener
+            .set_nonblocking(true)
+            .expect("set nonblocking for accept polling");
+
+        let server_thread = std::thread::spawn(move || {
+            let mut client_threads = Vec::new();
+
+            while !shutdown_clone.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let eng = std::sync::Arc::clone(&engine);
+                        let handle = std::thread::spawn(move || {
+                            Self::handle_client(stream, &eng);
+                        });
+                        client_threads.push(handle);
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            for handle in client_threads {
+                let _ = handle.join();
+            }
+        });
+
+        Self {
+            addr,
+            shutdown,
+            server_thread: Some(server_thread),
+        }
+    }
+
+    /// Returns the local socket address of the test server.
+    pub fn addr(&self) -> std::net::SocketAddr {
+        self.addr
+    }
+
+    fn handle_client(
+        mut stream: std::net::TcpStream,
+        engine: &std::sync::Arc<std::sync::Mutex<cachedb::cmd::Engine>>,
+    ) {
+        use cachedb::cmd::dispatch::Session;
+        use cachedb::cmd::request::handle_request;
+        use cachedb::proto::Decoded;
+        use cachedb::proto::decode::decode_frame;
+        use cachedb::proto::encode::encode_frame;
+        use std::io::{Read, Write};
+        use std::time::Duration;
+
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+        let mut session = Session::new(1);
+        let mut buf = Vec::new();
+        let mut temp = [0u8; 8192];
+
+        loop {
+            while !buf.is_empty() {
+                match decode_frame(&buf) {
+                    Ok(Decoded::Complete((frame, used))) => {
+                        buf.drain(..used);
+                        let outcome = {
+                            let mut eng = engine.lock().expect("lock engine");
+                            handle_request(&mut eng, &mut session, &frame)
+                        };
+
+                        let mut out = Vec::new();
+                        encode_frame(&outcome.reply_frame, &mut out).expect("encode reply");
+                        if stream.write_all(&out).is_err() {
+                            return;
+                        }
+
+                        if outcome.close {
+                            return;
+                        }
+                    }
+                    Ok(Decoded::NeedMore) => break,
+                    Err(_) => return,
+                }
+            }
+
+            match stream.read(&mut temp) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => buf.extend_from_slice(&temp[..n]),
+            }
+        }
+    }
+}
+
+impl Drop for TestBlockingServer {
+    fn drop(&mut self) {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.server_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}

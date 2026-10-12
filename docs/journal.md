@@ -1582,3 +1582,40 @@ We formalized the exact coercion and error mapping as follows:
 3. **Fatal Error State Machine**: Fatal transport errors (`Io`, `Protocol`, `ConnectionClosed`, `ReplyTooLarge`) transition the client into `is_broken = true`. Subsequent calls return `ConnectionClosed` immediately. Non-fatal application errors (`ClientError::Server`) keep the connection healthy.
 4. **Cross-Platform Disconnect Mapping**: Windows socket aborts (`WSAECONNABORTED`, 10053) and peer resets (`ConnectionReset`, `BrokenPipe`, `UnexpectedEof`) are normalized to `ClientError::ConnectionClosed`.
 5. **Deferred Features**: Automatic reconnect, connection pooling, TLS encryption, and async runtimes are intentionally omitted in v0.1.
+
+---
+
+## 2026-10-12: Week 8 Step 2 — Client Hardening & CLI Implementation
+
+- **Date**: 2026-10-12
+- **Scope**: Pipeline chunking deadlock prevention, cursor-based read buffering, `cachedb-cli` utility implementation, interactive REPL, and E2E testing.
+
+### 1. Client Hardening (`src/client.rs`)
+
+- **Pipeline Chunking**:
+  - Bound batched writes to `PIPELINE_CHUNK_COMMANDS = 256` and `PIPELINE_CHUNK_BYTES = 262,144` (256 KB). Commands exceeding 256 KB form isolated chunks.
+  - Mitigates TCP socket buffer deadlocks where a server blocks on writes before draining client input buffers.
+  - Zero value cloning: commands are consumed into output buffers directly.
+- **Unified Reply Validation**:
+  - Factored out `validate_reply` verifying `FLAG_RESPONSE`, `expected_id`, `Opcode::Command`, and mapping `FLAG_ERROR` / `Value::Error`. Applied to both `command()` and `pipeline()`.
+- **Cursor Read Buffer**:
+  - Replaced per-frame `drain(..used)` with `read_cursor: usize` and 64 KB block socket reads.
+  - Buffer is compacted (shifting unconsumed bytes to the front) only when `read_cursor > buf.len() / 2` or empty, reducing buffer shift overhead to $O(1)$ amortized.
+
+### 2. Command-Line Interface (`cachedb-cli`)
+
+- **Core Engine (`src/cli.rs`)**:
+  - `parse_line`: Whitespace splitting respecting double quotes and escapes (`\"`, `\\`, `\n`, `\t`, `\xHH`).
+  - `build_command`: Forces command verb and known key parameters (`put`, `fetch`, `drop`, `has`, `bump` at pos 1) to `Value::Text`. Parses strict integers matching `bump` grammar, booleans, nil, floats, and `hex:...` byte literals.
+  - `format_value`: Redis-cli style formatting (`(nil)`, `(integer)`, `(float)`, `(bool)`, quoted text with escapes, UTF-8/hex bytes, indented nested arrays with 3-space alignment, maps, `(error CODE) MSG`, and >1 MB safety truncation).
+  - `run`: Handles one-shot commands (exiting 0 on success, 1 on server errors, 2 on usage/network failure) and interactive REPL mode.
+- **Interactive REPL**:
+  - Automatically identifies terminal sessions (`std::io::IsTerminal`), emitting banner and `cachedb> ` prompt.
+  - Builtins: `help`, `exit`, `quit` (transmitting `quit` to server before graceful termination).
+  - Resilient session loop: Syntax errors and server errors (`ClientError::Server`) log to `stderr` and continue; socket drops terminate with exit code 2.
+
+### 3. Edge Cases & Discoveries
+
+1. **Key Type Preservation**: Commands like `put 123 456` or `bump 100 5` must treat the key as `Value::Text("123")` rather than `Value::Int(123)` to align with server storage and dictionary lookup rules.
+2. **Server Verb Return Values**: Server handlers return lowercase string values (e.g. `ping` returns `"pong"` rather than `"PONG"`, `quit` returns `"ok"`).
+3. **Deadlock in Pipeline Batches**: Without chunking, large pipeline bursts easily exceed OS socket send/receive buffer sizes (typically 64KB–256KB), stalling both client and server when socket writes block synchronously. Chunking guarantees safe forward progress.
